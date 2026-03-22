@@ -141,6 +141,8 @@ export default function MapView({
     };
 
     const onHover = (data) => {
+        // AI hover briefing removed as per user request for less chattiness
+        /*
         const point = data.points[0];
         const evt = point.data.customdata?.[point.pointNumber];
         if (evt && evt.event && onEventHover) {
@@ -149,6 +151,7 @@ export default function MapView({
                 onEventHover(evt);
             }, 1500);
         }
+        */
     };
 
     const onUnhover = () => {

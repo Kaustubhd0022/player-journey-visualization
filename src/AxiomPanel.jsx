@@ -10,14 +10,13 @@ const AxiomPanel = forwardRef(function AxiomPanel({ appState, isOpen, onClose },
   const feedRef  = useRef(null);
   const convRef  = useRef([]);
 
-  // Boot message on open
+  // Passive boot message
   useEffect(() => {
     if (isOpen && messages.length === 0) {
       const ctx = getAIContext(appState);
-      const map = ctx.currentView.map || 'the map';
       const boot = {
         id: 'boot', role: 'ai', trigger: 'BOOT',
-        text: `AXIOM online. I'm reading ${ctx.dataSource}.\n\nCurrently tracking ${ctx.visibleData.kills} kill events, ${ctx.visibleData.stormDeaths} storm deaths, and ${ctx.visibleData.humanPlayers} human players on ${map}.\n\nTell me what to analyze — or hover over any event marker and I'll brief you automatically.`,
+        text: `AXIOM design intelligence is ready. I have access to ${ctx.dataSource} data for ${ctx.currentView.map}.\n\nAsk me anything about the level balance, player flow, or spatial trends.`,
         timestamp: new Date(),
       };
       setMessages([boot]);
@@ -294,7 +293,7 @@ const AxiomPanel = forwardRef(function AxiomPanel({ appState, isOpen, onClose },
           value={inputVal}
           onChange={e => setInputVal(e.target.value)}
           onKeyDown={e => e.key === 'Enter' && !e.shiftKey && handleSend()}
-          placeholder="Ask AXIOM..."
+          placeholder="Ask me anything related to this..."
           disabled={isLoading}
           style={{
             flex: 1, background: '#090D14',

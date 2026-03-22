@@ -146,7 +146,13 @@ export async function processFiles(files, onProgress) {
   for (const { name, buffer } of allBuffers) {
     onProgress(2, `Parsing: ${name}`);
     const rows = await parseParquetBuffer(buffer, name);
-    allRows.push(...rows);
+    // If match_id is missing or 'unknown' in the row, use the filename
+    const fileNameMatchId = name.split('/').pop().replace('.parquet', '');
+    const rowsWithFileRef = rows.map(r => ({
+        ...r,
+        match_id: r.match_id && String(r.match_id) !== 'unknown' ? String(r.match_id) : fileNameMatchId
+    }));
+    allRows.push(...rowsWithFileRef);
   }
   
   if (allRows.length === 0) {

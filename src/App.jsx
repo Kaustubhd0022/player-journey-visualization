@@ -7,7 +7,6 @@ import UploadMode from './UploadMode';
 import CoordConfigScreen from './CoordConfigScreen';
 import AxiomPanel from './AxiomPanel';
 import AxiomLogo from './AxiomLogo';
-import AxiomSuggestionPopup from './AxiomSuggestionPopup';
 import './styles/globals.css';
 
 export default function App() {
@@ -33,8 +32,6 @@ export default function App() {
 
   // ── AI State ──────────────────────────────────────────────────────────────
   const [axiomOpen, setAxiomOpen]     = useState(false);
-  const [axiomBadge, setAxiomBadge]   = useState(0);
-  const [showAxiomPopup, setShowAxiomPopup] = useState(true);
   const axiomRef = useRef(null);
   const prevPhaseRef = useRef(null);
   const [hoveredEvent, setHoveredEvent] = useState(null);
@@ -151,10 +148,13 @@ export default function App() {
     if (axiomOpen) {
       axiomRef.current?.triggerAI(type, payload);
     } else {
-      setAxiomBadge(b => Math.min(b + 1, 9));
+      // Passive badge increment removed for less intrusion
+      // setAxiomBadge(b => Math.min(b + 1, 9));
     }
   }, [axiomOpen]);
 
+  // Automatic triggers removed as per user request for less chattiness
+  /*
   useEffect(() => { if (selectedMatchId) triggerAxiom('MATCH_SELECTED', selectedMatchId); }, [selectedMatchId, triggerAxiom]);
   useEffect(() => { if (showHeatmap) triggerAxiom('HEATMAP_CHANGE', heatmapMode); }, [heatmapMode, showHeatmap, triggerAxiom]);
 
@@ -167,6 +167,7 @@ export default function App() {
       triggerAxiom('TIMELINE_PHASE', phase);
     }
   }, [currentTimeMs, matchDurationMs, selectedMatchId, triggerAxiom]);
+  */
 
   const handleViewModeChange = (mode) => {
     setViewMode(mode);
@@ -211,16 +212,11 @@ export default function App() {
         onClearUpload={() => { setUploadedData(null); setViewMode('built-in'); }}
         uploadedMapNames={uploadedData?.maps || []}
         axiomOpen={axiomOpen}
-        axiomBadge={axiomBadge}
-        onAxiomToggle={() => { setAxiomOpen(!axiomOpen); setAxiomBadge(0); setShowAxiomPopup(false); }}
-        showAxiomPopup={showAxiomPopup}
+        onAxiomToggle={() => setAxiomOpen(!axiomOpen)}
         onAxiomSuggestion={(text) => {
             setAxiomOpen(true);
-            setAxiomBadge(0);
-            setShowAxiomPopup(false);
             setTimeout(() => axiomRef.current?.sendMessage(text), 300);
         }}
-        onAxiomDismissSuggestion={() => setShowAxiomPopup(false)}
       />
 
       <div style={{ display: 'flex', flex: 1, overflow: 'hidden', position: 'relative' }}>
@@ -299,8 +295,8 @@ function Header({
   playerTypeFilter, loading,
   onClearUpload,
   uploadedMapNames = [],
-  axiomOpen, axiomBadge, onAxiomToggle,
-  showAxiomPopup, onAxiomSuggestion, onAxiomDismissSuggestion
+  axiomOpen, onAxiomToggle,
+  onAxiomSuggestion
 }) {
   return (
     <div style={{
@@ -356,24 +352,10 @@ function Header({
             }}
             >
             <AxiomLogo size={14} animated={!axiomOpen} />
-            AXIOM
-            {axiomBadge > 0 && !axiomOpen && (
-                <span style={{
-                background: '#EF4444', color: '#fff',
-                fontFamily: "'JetBrains Mono',monospace",
-                fontSize: 9, width: 16, height: 16,
-                borderRadius: '50%', display: 'flex',
-                alignItems: 'center', justifyContent: 'center',
-                }}>{axiomBadge}</span>
-            )}
+            {axiomOpen ? 'CLOSE' : 'AXIOM'}
             </button>
 
-            {showAxiomPopup && !axiomOpen && (
-            <AxiomSuggestionPopup
-                onSelect={onAxiomSuggestion}
-                onDismiss={onAxiomDismissSuggestion}
-            />
-            )}
+            {/* AxiomSuggestionPopup removed */}
         </div>
 
         <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
