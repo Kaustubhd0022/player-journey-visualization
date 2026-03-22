@@ -16,18 +16,19 @@ function Panel({ title, sub, children }) {
 function KPIStrip({ stats }) {
   const s = stats.summary;
   const kpis = [
-    { label:'Total Kills',    val: s.totalKills,        sub:`${s.humanKills} human`,       color:'#3B82F6' },
-    { label:'Storm Deaths',   val: s.stormDeaths,       sub:`${s.stormDeathRate}% of deaths`, color:'#FACC15' },
-    { label:'Survival Rate',  val:`${s.survivalRate}%`, sub:`${s.survivors} survived`,      color:'#22C55E' },
-    { label:'Match Duration', val: s.durationLabel,     sub:`${s.matchCount} match(es)`,    color:'#00C8FF' },
-    { label:'K / D',          val: s.kd,                sub:'Kills per death',              color:'#A78BFA' },
-    { label:'Loot / Player',  val: s.lootPerPlayer,     sub:'Items per human',              color:'#F97316' },
-    { label:'Avg Distance',   val:`${s.avgDistance.toLocaleString()}px`, sub:'Per human player', color:'#94A3B8' },
-    { label:'Total Players',  val: s.humanPlayers + s.botPlayers, sub:`${s.botPlayers} bots`, color:'#4B6280' },
+    { label:'Total Kills',      val: s.totalKills,             sub:`${s.humanKills} human`,          color:'#3B82F6' },
+    { label:'Storm Deaths',     val: s.stormDeaths,            sub:`${s.stormDeathRate}% of deaths`,  color:'#FACC15' },
+    { label:'Survival Rate',    val:`${s.survivalRate}%`,      sub:`${s.survivors} survived`,         color:'#22C55E' },
+    { label:'Match Duration',   val: s.durationLabel,          sub:`${s.matchCount} match(es)`,       color:'#00C8FF' },
+    { label:'K / D',            val: s.kd,                     sub:'Kills per death',                 color:'#A78BFA' },
+    { label:'Loot / Player',    val: s.lootPerPlayer,          sub:'Items per human',                 color:'#F97316' },
+    { label:'Avg Distance',     val:`${s.avgDistance.toLocaleString()}px`, sub:'Per human player',  color:'#94A3B8' },
+    { label:'Total Players',    val: s.humanPlayers + s.botPlayers, sub:`${s.botPlayers} bots`,     color:'#4B6280' },
+    { label:'First Engagement', val: s.avgFirstKillLabel || 'N/A', sub: s.firstKillAssessment?.split('—')[0].trim() || 'No data', color:'#F97316' },
   ];
 
   return (
-    <div style={{ display:'grid', gridTemplateColumns:'repeat(8,1fr)', gap:1, background:'#1E2D42' }}>
+    <div style={{ display:'grid', gridTemplateColumns:'repeat(9,1fr)', gap:1, background:'#1E2D42' }}>
       {kpis.map(k => (
         <div key={k.label} style={{
           background:'#090D14', padding:'14px 16px',
@@ -376,10 +377,11 @@ function DistancePanel({ players, avg }) {
   );
 }
 
-function KillDensityGrid({ grid }) {
+function KillDensityGrid({ grid, chokeFlags, chokePoints, killGridStats }) {
   const flat = grid.flat();
-  const maxVal = Math.max(...flat, 1);
-  const total  = flat.reduce((a,b)=>a+b,0);
+  let maxVal = 1;
+  flat.forEach(v => { if (v > maxVal) maxVal = v; });
+  const total = flat.reduce((a, b) => a + b, 0);
 
   return (
     <Panel title="Kill Density Grid" sub="8×8 spatial breakdown — each cell = 128×128px map area">
@@ -389,22 +391,28 @@ function KillDensityGrid({ grid }) {
             {grid.map((row, ry) =>
               row.map((val, cx) => {
                 const intensity = val / maxVal;
-                const isHot = val === maxVal && val > 0;
+                const isChoke = chokeFlags?.[ry]?.[cx];
                 return (
-                  <div key={`${ry}-${cx}`} title={`Zone (${cx},${ry}): ${val} kills (${total>0?Math.round(val/total*100):0}%)`} style={{
-                    height:40, borderRadius:1, position:'relative',
-                    background: val===0 ? '#0D1320' : `rgba(59,130,246,${0.08+intensity*0.87})`,
-                    border: isHot ? '1px solid #3B82F6' : '1px solid transparent',
-                    display:'flex', alignItems:'center', justifyContent:'center',
-                    cursor:'default', transition:'all .2s',
-                  }}>
+                  <div key={`${ry}-${cx}`}
+                    title={`Zone (${cx},${ry}): ${val} kills${isChoke ? ' ⚠ POSSIBLE CHOKE POINT' : ''}`}
+                    style={{
+                      height:40, borderRadius:1, position:'relative',
+                      background: val===0 ? '#0D1320' : `rgba(59,130,246,${0.08 + intensity*0.87})`,
+                      border: isChoke ? '2px solid #EF4444' : '1px solid transparent',
+                      display:'flex', alignItems:'center', justifyContent:'center',
+                      cursor:'default', transition:'all .2s',
+                    }}
+                  >
                     {val > 0 && (
-                      <span style={{ fontFamily:"'Rajdhani',sans-serif", fontSize: val>99?10:12, fontWeight:700, color: intensity>0.5?'#fff':'rgba(255,255,255,0.6)' }}>
+                      <span style={{ fontFamily:"'Rajdhani',sans-serif", fontSize:val>99?10:12, fontWeight:700, color:'#fff' }}>
                         {val}
                       </span>
                     )}
-                    {isHot && (
-                      <div style={{ position:'absolute', inset:0, border:'1px solid #3B82F6', borderRadius:1, pointerEvents:'none' }}/>
+                    {isChoke && (
+                      <div style={{
+                        position:'absolute', top:-1, right:-1,
+                        width:8, height:8, background:'#EF4444', borderRadius:'50%',
+                      }}/>
                     )}
                   </div>
                 );
@@ -419,6 +427,12 @@ function KillDensityGrid({ grid }) {
               ))}
             </div>
             <span style={{ fontFamily:"'JetBrains Mono',monospace", fontSize:9, color:'#3B82F6' }}>High kills</span>
+            {chokePoints?.length > 0 && (
+              <span style={{ marginLeft:12, fontFamily:"'JetBrains Mono',monospace", fontSize:9, color:'#EF4444', display:'flex', alignItems:'center', gap:4 }}>
+                <div style={{ width:8, height:8, background:'#EF4444', borderRadius:'50%' }}/>
+                Choke point
+              </span>
+            )}
           </div>
         </div>
 
@@ -432,8 +446,9 @@ function KillDensityGrid({ grid }) {
             .map((c,i)=>(
               <div key={i} style={{ display:'flex', justifyContent:'space-between', alignItems:'center', marginBottom:10 }}>
                 <div>
-                  <div style={{ fontFamily:"'JetBrains Mono',monospace", fontSize:10, color:'#E2E8F0' }}>
+                  <div style={{ fontFamily:"'JetBrains Mono',monospace", fontSize:10, color: chokeFlags?.[c.row]?.[c.col]?'#EF4444':'#E2E8F0', display:'flex', alignItems:'center', gap:4 }}>
                     Zone ({c.col},{c.row})
+                    {chokeFlags?.[c.row]?.[c.col] && <span style={{ fontSize:8, color:'#EF4444' }}>⚠</span>}
                   </div>
                   <div style={{ fontFamily:"'JetBrains Mono',monospace", fontSize:9, color:'#4B6280' }}>
                     {total>0?Math.round(c.val/total*100):0}% of kills
@@ -447,6 +462,27 @@ function KillDensityGrid({ grid }) {
           }
         </div>
       </div>
+
+      {chokePoints?.length > 0 && (
+        <div style={{ marginTop:16, background:'rgba(239,68,68,.07)', border:'1px solid rgba(239,68,68,.2)', padding:'12px 16px' }}>
+          <div style={{ fontFamily:"'JetBrains Mono',monospace", fontSize:10, color:'#EF4444', letterSpacing:'.1em', textTransform:'uppercase', marginBottom:10 }}>
+            ▲ {chokePoints.length} Possible Choke Point{chokePoints.length > 1 ? 's' : ''} Detected
+          </div>
+          {chokePoints.map(c => (
+            <div key={c.cx+','+c.cy} style={{ display:'flex', alignItems:'center', justifyContent:'space-between', marginBottom:6 }}>
+              <span style={{ fontFamily:"'JetBrains Mono',monospace", fontSize:11, color:'#E2E8F0' }}>
+                Zone ({c.cx},{c.cy}) — {c.area}
+              </span>
+              <span style={{ fontFamily:"'Rajdhani',sans-serif", fontSize:18, fontWeight:700, color:'#EF4444' }}>
+                {c.kills} kills ({c.pct.toFixed(1)}%)
+              </span>
+            </div>
+          ))}
+          <div style={{ fontFamily:"'JetBrains Mono',monospace", fontSize:9, color:'#4B6280', marginTop:8, lineHeight:1.6 }}>
+            Threshold: &gt;{killGridStats?.threshold} kills per cell (&gt;mean+2σ). Enable Kill Heatmap in Map View to visualize.
+          </div>
+        </div>
+      )}
     </Panel>
   );
 }
@@ -628,6 +664,47 @@ function LandingZonePanel({ topLandingZones, totalLandings }) {
 }
 
 
+function EngagementPanel({ summary }) {
+  const dist = summary.avgEngagementDist || 0;
+  const color = dist < 50 ? '#EF4444' : dist < 120 ? '#22C55E' : dist < 250 ? '#FACC15' : '#F97316';
+  const ranges = [
+    { label:'Close',  range:'<50px',    color:'#EF4444', active: dist>0&&dist<50   },
+    { label:'Mid',    range:'50–120px', color:'#22C55E', active: dist>=50&&dist<120 },
+    { label:'Long',   range:'120–250px',color:'#FACC15', active: dist>=120&&dist<250},
+    { label:'Sniper', range:'>250px',   color:'#F97316', active: dist>=250 && dist>0},
+  ];
+  return (
+    <Panel title="Engagement Distance" sub="Avg attacker-to-victim distance at moment of kill">
+      <div style={{ display:'flex', alignItems:'flex-end', gap:12, margin:'12px 0' }}>
+        <div style={{ fontFamily:"'Rajdhani',sans-serif", fontSize:52, fontWeight:700, color, lineHeight:1 }}>
+          {dist > 0 ? dist : '—'}
+        </div>
+        <div style={{ paddingBottom:6 }}>
+          <div style={{ fontFamily:"'JetBrains Mono',monospace", fontSize:10, color:'#4B6280' }}>px distance</div>
+          <div style={{ fontFamily:"'JetBrains Mono',monospace", fontSize:9, color:'#2A3F57', marginTop:2 }}>
+            {summary.engagementSampleSize || 0} paired events
+          </div>
+        </div>
+      </div>
+      <div style={{ display:'flex', gap:6, marginBottom:14 }}>
+        {ranges.map(r => (
+          <div key={r.label} style={{
+            flex:1, padding:'8px 4px', textAlign:'center',
+            background: r.active ? `${r.color}15` : '#0D1320',
+            border: `1px solid ${r.active ? r.color : '#1E2D42'}`,
+          }}>
+            <div style={{ fontFamily:"'JetBrains Mono',monospace", fontSize:9, color:r.active?r.color:'#4B6280', marginBottom:2 }}>{r.label}</div>
+            <div style={{ fontFamily:"'JetBrains Mono',monospace", fontSize:8, color:'#2A3F57' }}>{r.range}</div>
+          </div>
+        ))}
+      </div>
+      <div style={{ fontFamily:"'JetBrains Mono',monospace", fontSize:10, color, lineHeight:1.6 }}>
+        {summary.engagementStyle || 'No data'}
+      </div>
+    </Panel>
+  );
+}
+
 export default function StatsDashboard({ stats, landingEvents, topLandingZones, deadZones }) {
   if (!stats) {
     return (
@@ -673,21 +750,29 @@ export default function StatsDashboard({ stats, landingEvents, topLandingZones, 
         <LootPanel summary={stats.summary} lootGrid={stats.lootGrid} />
         <DistancePanel players={stats.playerStats} avg={stats.summary.avgDistance} />
       </div>
-      
-      {/* Row 5 — Landing Zone + Kill Density */}
+
+      {/* Row 5 — Engagement Distance + Kill Density */}
+      <div style={{ display:'grid', gridTemplateColumns:'1fr 1.8fr', gap:20 }}>
+        <EngagementPanel summary={stats.summary} />
+        <KillDensityGrid
+          grid={stats.killGrid}
+          chokeFlags={stats.chokeFlags}
+          chokePoints={stats.chokePoints}
+          killGridStats={stats.killGridStats}
+        />
+      </div>
+
+      {/* Row 6 — Landing Zone + Dead zone */}
       <div style={{ display:'grid', gridTemplateColumns:'1fr 1.5fr', gap:20 }}>
         <LandingZonePanel
           topLandingZones={topLandingZones}
           totalLandings={landingEvents?.length || 0}
         />
-        <KillDensityGrid grid={stats.killGrid} />
+        <DeadZoneReport
+          deadZones={deadZones}
+          totalMatches={stats.summary.matchCount}
+        />
       </div>
-      
-      {/* Row 6 — Dead zone full width */}
-      <DeadZoneReport
-        deadZones={deadZones}
-        totalMatches={stats.summary.matchCount}
-      />
     </div>
   );
 }

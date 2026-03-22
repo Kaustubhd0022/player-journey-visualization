@@ -210,7 +210,19 @@ export default function FilterPanel({
           </label>
         </div>
         <div className="switch-item">
-          <span className="checkbox-label">Show Storm Circle</span>
+          <span className="checkbox-label" style={{ display:'flex', alignItems:'center', gap:6 }}>
+            Show Storm Circle
+            <span
+              title="Storm boundary is approximated from survivor position centroids — actual LILA BLACK storm coordinates are not in the telemetry schema. Enable KilledByStorm markers (yellow) to see confirmed storm death locations near the boundary."
+              style={{
+                width:14, height:14, borderRadius:'50%',
+                border:'1px solid #2A3F57', color:'#2A3F57',
+                display:'inline-flex', alignItems:'center', justifyContent:'center',
+                fontFamily:"'JetBrains Mono',monospace", fontSize:9, cursor:'help',
+                flexShrink:0,
+              }}
+            >?</span>
+          </span>
           <label className="switch">
             <input type="checkbox" checked={showStormCircle} onChange={e => onShowStormCircleChange(e.target.checked)} />
             <span className="slider"></span>

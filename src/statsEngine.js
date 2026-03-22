@@ -124,6 +124,33 @@ export function computeStats(events) {
     killGrid[cy][cx]++;
   });
 
+  // ── CHOKE POINT DETECTION (mean + 2σ) ────────────────────────────────────
+  const flatKillCells = killGrid.flat().filter(v => v > 0);
+  const killMean = flatKillCells.length > 0
+    ? flatKillCells.reduce((a, b) => a + b, 0) / flatKillCells.length : 0;
+  const killVariance = flatKillCells.length > 0
+    ? flatKillCells.reduce((a, b) => a + (b - killMean) ** 2, 0) / flatKillCells.length : 0;
+  const killStdDev = Math.sqrt(killVariance);
+  const chokeThreshold = killMean + 2 * killStdDev;
+
+  const chokeFlags = killGrid.map(row => row.map(val => val > chokeThreshold && val > 0));
+
+  const chokePoints = [];
+  const humanKillTotal = kills.filter(e => !e.is_bot).length;
+  for (let cy = 0; cy < 8; cy++) {
+    for (let cx = 0; cx < 8; cx++) {
+      if (chokeFlags[cy][cx]) {
+        chokePoints.push({
+          cx, cy,
+          kills: killGrid[cy][cx],
+          pct: humanKillTotal > 0 ? killGrid[cy][cx] / humanKillTotal * 100 : 0,
+          area: `${cy < 4 ? 'North' : 'South'}-${cx < 4 ? 'West' : 'East'}`,
+        });
+      }
+    }
+  }
+  chokePoints.sort((a, b) => b.kills - a.kills);
+
   // ── LOOT HOTSPOTS ─────────────────────────────────────────────────────────
   const lootGrid = Array.from({ length: 8 }, () => Array(8).fill(0));
   loot.forEach(e => {
@@ -133,8 +160,54 @@ export function computeStats(events) {
   });
 
   // ── MATCH COUNT ───────────────────────────────────────────────────────────
-  const matchCount = [...new Set(events.map(e => e.match_id).filter(Boolean))].length;
+  const matchIds = [...new Set(events.map(e => e.match_id).filter(Boolean))];
+  const matchCount = matchIds.length;
   const killsPerMatch = matchCount > 0 ? (kills.length / matchCount).toFixed(1) : kills.length;
+
+  // ── TIME TO FIRST ENGAGEMENT ──────────────────────────────────────────────
+  const matchFirstKills = {};
+  kills.forEach(e => {
+    const mid = e.match_id;
+    if (!matchFirstKills[mid] || (e.ts || 0) < matchFirstKills[mid]) {
+      matchFirstKills[mid] = e.ts || 0;
+    }
+  });
+  const firstKillTimes = Object.values(matchFirstKills).filter(t => t > 0);
+  const avgFirstKillMs = firstKillTimes.length > 0
+    ? firstKillTimes.reduce((a, b) => a + b, 0) / firstKillTimes.length : 0;
+  const avgFirstKillLabel = avgFirstKillMs > 0
+    ? `T+${Math.floor(avgFirstKillMs / 60000)}:${String(Math.floor((avgFirstKillMs % 60000) / 1000)).padStart(2, '0')}`
+    : 'N/A';
+  const firstKillAssessment =
+    avgFirstKillMs > 0 && avgFirstKillMs < 60000   ? 'Too fast — loot density may be too low or spawns too close' :
+    avgFirstKillMs > 0 && avgFirstKillMs < 180000  ? 'Healthy — players loot before first contact' :
+    avgFirstKillMs > 0 && avgFirstKillMs < 360000  ? 'Moderate — map may be large or loot dispersed' :
+    avgFirstKillMs > 0                              ? 'Very slow — check if players are engaging at all' : 'No data';
+
+  // ── ENGAGEMENT DISTANCE (attacker-to-victim at moment of kill) ─────────────
+  const engagementDistances = [];
+  kills.forEach(k => {
+    const matchedDeath = deaths.find(d =>
+      d.match_id === k.match_id &&
+      d.user_id !== k.user_id &&
+      Math.abs((d.ts || 0) - (k.ts || 0)) < 500 &&
+      d.px != null && k.px != null
+    );
+    if (matchedDeath) {
+      const dx = (matchedDeath.px || 0) - (k.px || 0);
+      const dy = (matchedDeath.py || 0) - (k.py || 0);
+      const dist = Math.sqrt(dx * dx + dy * dy);
+      if (dist > 0 && dist < 1200) engagementDistances.push(dist);
+    }
+  });
+  const avgEngagementDist = engagementDistances.length > 0
+    ? Math.round(engagementDistances.reduce((a, b) => a + b, 0) / engagementDistances.length) : 0;
+  const engagementStyle =
+    avgEngagementDist > 0 && avgEngagementDist < 50   ? 'Close-quarters — map is choke-heavy. Cover variety needed.' :
+    avgEngagementDist > 0 && avgEngagementDist < 120  ? 'Mid-range — balanced engagement distances. Healthy.' :
+    avgEngagementDist > 0 && avgEngagementDist < 250  ? 'Long-range — map favors sniping. Review cover placement.' :
+    avgEngagementDist > 0                             ? 'Very long-range — open map. Verify this is intended.' :
+    'Insufficient paired events';
 
   return {
     summary: {
@@ -158,12 +231,15 @@ export function computeStats(events) {
       matchCount,
       killsPerMatch,
       totalEvents: events.length,
+      avgFirstKillLabel, avgFirstKillMs, firstKillAssessment,
+      avgEngagementDist, engagementStyle, engagementSampleSize: engagementDistances.length,
     },
     playerStats,
     timeline,
     quadrants,
     stormPhases,
-    killGrid,
+    killGrid, chokeFlags, chokePoints,
+    killGridStats: { mean: Math.round(killMean), stdDev: Math.round(killStdDev), threshold: Math.round(chokeThreshold) },
     lootGrid,
     botVsHuman: {
       humanKills: kills.filter(e => !e.is_bot).length,

@@ -13,12 +13,13 @@ export default function MapView({
   focusedPlayerId, onFocusPlayerChange,
   hotspotCount,
   showMapImage, customMapConfig, customMinimapUrl,
-  onEventHover,
+  onEventHover, onMapClick, axiomOpen,
   showStormCircle, activeCircle,
   showLandingZones, landingGrid, topLandingZones
 }) {
   const plotRef = useRef(null);
   const hoverTimerRef = useRef(null);
+  const [clickFlash, setClickFlash] = useState(null);
 
   const getMinimapUrl = (map) => {
     if (customMinimapUrl) return customMinimapUrl;
@@ -310,9 +311,20 @@ export default function MapView({
     const handleRef = plotRef.current;
     
     const onClick = (data) => {
-      const uid = data.points[0]?.data?.customdata?.[data.points[0].pointNumber]?.user_id || data.points[0]?.data?.customdata?.[0];
+      const point = data.points?.[0];
+      if (!point) return;
+      const uid = point.data?.customdata?.[point.pointNumber]?.user_id ||
+                  (typeof point.data?.customdata?.[0] === 'string' ? point.data.customdata[0] : null);
       if (uid && typeof uid === 'string' && onFocusPlayerChange) {
         onFocusPlayerChange(uid === focusedPlayerId ? null : uid);
+      }
+      // Map zone click → AXIOM
+      if (onMapClick) {
+        const px = Math.round(point.x);
+        const py = Math.round(1024 - point.y);
+        setClickFlash({ x: point.x, y: point.y });
+        setTimeout(() => setClickFlash(null), 1500);
+        onMapClick({ px, py, x: point.x, y: point.y });
       }
     };
 
@@ -343,7 +355,7 @@ export default function MapView({
         handleRef.removeAllListeners('plotly_hover');
         handleRef.removeAllListeners('plotly_unhover');
     };
-  }, [selectedMap, buildTraces, showHeatmap, heatmapGrid, heatmapMode, focusedPlayerId, showMapImage, onEventHover, onFocusPlayerChange]);
+  }, [selectedMap, buildTraces, showHeatmap, heatmapGrid, heatmapMode, focusedPlayerId, showMapImage, onEventHover, onFocusPlayerChange, onMapClick]);
 
   return (
     <div style={{ flex: 1, background: 'var(--bg0)', position: 'relative', overflow: 'hidden' }}>
@@ -362,6 +374,54 @@ export default function MapView({
       )}
 
       <div ref={plotRef} style={{ width: '100%', height: '100%' }} />
+
+      {/* Storm circle approximation disclaimer */}
+      {showStormCircle && activeCircle && (
+        <div style={{
+          position:'absolute', bottom:80, left:16, zIndex:10,
+          fontFamily:"'JetBrains Mono',monospace", fontSize:9,
+          color:'rgba(250,204,21,.5)', letterSpacing:'.08em',
+          background:'rgba(5,8,16,.85)', padding:'3px 10px',
+          border:'1px solid rgba(250,204,21,.15)',
+          pointerEvents:'none',
+        }}>
+          ◎ Storm boundary approximated — enable yellow markers to verify
+        </div>
+      )}
+
+      {/* AXIOM active hint */}
+      {axiomOpen && (
+        <div style={{
+          position:'absolute', bottom:showStormCircle && activeCircle ? 106 : 80,
+          left:'50%', transform:'translateX(-50%)',
+          fontFamily:"'JetBrains Mono',monospace", fontSize:9, color:'rgba(0,200,255,.5)',
+          letterSpacing:'.1em', pointerEvents:'none', whiteSpace:'nowrap',
+          background:'rgba(5,8,16,.85)', padding:'4px 12px',
+          border:'1px solid rgba(0,200,255,.15)',
+        }}>
+          ◈ AXIOM ACTIVE — click any map location to analyze that zone
+        </div>
+      )}
+
+      {/* Click ripple */}
+      {clickFlash && (
+        <div style={{
+          position:'absolute',
+          left: `${(clickFlash.x / 1024) * 100}%`,
+          top:  `${((1024 - clickFlash.y) / 1024) * 100}%`,
+          transform:'translate(-50%,-50%)',
+          width:40, height:40, borderRadius:'50%',
+          border:'2px solid #00C8FF',
+          animation:'clickRipple .8s ease-out forwards',
+          pointerEvents:'none', zIndex:20,
+        }}/>
+      )}
+      <style>{`
+        @keyframes clickRipple {
+          0%  { transform:translate(-50%,-50%) scale(0.5); opacity:1; }
+          100%{ transform:translate(-50%,-50%) scale(2.5); opacity:0; }
+        }
+      `}</style>
 
       {/* Legend */}
       <Legend />

@@ -112,22 +112,39 @@ import { computeStats, computeStormCircles, getActiveCircle, computeLandingZones
 import './styles/globals.css';
 
 export default function App() {
-  // ── Filter state ──────────────────────────────────────────────────────────
-  const [selectedMap,      setSelectedMap]      = useState('AmbroseValley');
-  const [selectedDate,     setSelectedDate]      = useState(null);
-  const [selectedMatchId,  setSelectedMatchId]   = useState(null);
-  const [playerTypeFilter, setPlayerTypeFilter]  = useState('human'); // 'all'|'human'|'bot'
+  // ── URL param helpers ─────────────────────────────────────────────────────
+  function getUrlParams() {
+    const p = new URLSearchParams(window.location.search);
+    return {
+      map:     p.get('map')     || 'AmbroseValley',
+      date:    p.get('date')    || null,
+      match:   p.get('match')   || null,
+      segment: p.get('segment') || 'human',
+      hmode:   p.get('hmode')   || 'kill',
+      hshow:   p.get('hshow')   === 'true',
+      paths:   p.get('paths')   !== 'false',
+      markers: p.get('markers') !== 'false',
+      events:  p.get('events')  ? p.get('events').split(',') : ['Kill','BotKill','Killed','BotKilled','Loot','KilledByStorm'],
+    };
+  }
+
+  // ── Filter state — initialized from URL ──────────────────────────────────
+  const urlP = useMemo(getUrlParams, []);
+  const [selectedMap,      setSelectedMap]      = useState(urlP.map);
+  const [selectedDate,     setSelectedDate]      = useState(urlP.date);
+  const [selectedMatchId,  setSelectedMatchId]   = useState(urlP.match);
+  const [playerTypeFilter, setPlayerTypeFilter]  = useState(urlP.segment);
   const [focusedPlayerId,  setFocusedPlayerId]   = useState(null);
-  const [analysisDepth,    setAnalysisDepth]     = useState(1); // 1: Aggregate, 2: Match, 3: Player
-  const [activeEvents,     setActiveEvents]       = useState(['Kill', 'BotKill', 'Killed', 'BotKilled', 'Loot', 'KilledByStorm']);
+  const [analysisDepth,    setAnalysisDepth]     = useState(1);
+  const [activeEvents,     setActiveEvents]       = useState(urlP.events);
 
   // ── Layer state ───────────────────────────────────────────────────────────
-  const [showPaths, setShowPaths] = useState(true);
-  const [showMarkers, setShowMarkers] = useState(true);
-  const [showHeatmap, setShowHeatmap] = useState(false);
+  const [showPaths, setShowPaths] = useState(urlP.paths);
+  const [showMarkers, setShowMarkers] = useState(urlP.markers);
+  const [showHeatmap, setShowHeatmap] = useState(urlP.hshow);
   const [showMapImage, setShowMapImage] = useState(true);
-  const [heatmapMode,  setHeatmapMode]  = useState('kill'); // 'kill'|'death'|'movement'
-  const [hotspotCount, setHotspotCount] = useState(0); // 0 = off, >0 = # of zones
+  const [heatmapMode,  setHeatmapMode]  = useState(urlP.hmode);
+  const [hotspotCount, setHotspotCount] = useState(0);
 
   // ── Timeline state ────────────────────────────────────────────────────────
   const [currentTimeMs,   setCurrentTimeMs]   = useState(0);
@@ -162,9 +179,13 @@ export default function App() {
   const [availableDates, setAvailableDates]  = useState([]);
   const [availableMatches, setAvailableMatches] = useState([]);
   const [loading,        setLoading]        = useState(false);
-  const [viewMode,       setViewMode]       = useState('built-in'); // 'built-in' | 'upload'
-  const [uploadedData,   setUploadedData]   = useState(null); // { events, heatmaps, matches, dates, mapConfigs }
-  const [needsConfig,    setNeedsConfig]    = useState(null); // { mapName }
+  const [viewMode,       setViewMode]       = useState('built-in');
+  const [uploadedData,   setUploadedData]   = useState(null);
+  const [needsConfig,    setNeedsConfig]    = useState(null);
+
+  // ── Data completeness tracking ────────────────────────────────────────────
+  const [sourceEventCount,    setSourceEventCount]    = useState(0);
+  const [processedEventCount, setProcessedEventCount] = useState(0);
 
   const rafRef = useRef(null);
   const lastFrameRef = useRef(null);
@@ -206,8 +227,11 @@ export default function App() {
       loadEvents(meta.eventFile),
       loadHeatmaps(meta.heatmapFile),
     ]).then(([eventsData, heatmapData]) => {
-      setAllEvents(eventsData.events || []);
-      runDataDiagnostic(eventsData.events || [], eventsData.events || [], selectedMap, selectedDate, null);
+      const evts = eventsData.events || [];
+      setAllEvents(evts);
+      setSourceEventCount(eventsData.sourceEventCount || eventsData.totalEvents || evts.length);
+      setProcessedEventCount(eventsData.processedEventCount || eventsData.totalEvents || evts.length);
+      runDataDiagnostic(evts, evts, selectedMap, selectedDate, null);
       setHeatmapGrids(heatmapData || {});
       setLoading(false);
     }).catch(err => {
@@ -371,6 +395,21 @@ export default function App() {
     }
   }, [currentTimeMs, showStormCircle, stormCircles, selectedMatchId, filteredEvents]);
 
+  // ── Write filter state to URL on every change ───────────────────────────
+  useEffect(() => {
+    const p = new URLSearchParams();
+    if (selectedMap)      p.set('map',     selectedMap);
+    if (selectedDate)     p.set('date',    selectedDate);
+    if (selectedMatchId)  p.set('match',   selectedMatchId);
+    if (playerTypeFilter) p.set('segment', playerTypeFilter);
+    p.set('hmode',   heatmapMode);
+    p.set('hshow',   showHeatmap.toString());
+    p.set('paths',   showPaths.toString());
+    p.set('markers', showMarkers.toString());
+    p.set('events',  activeEvents.join(','));
+    window.history.replaceState(null, '', `${window.location.pathname}?${p.toString()}`);
+  }, [selectedMap, selectedDate, selectedMatchId, playerTypeFilter, heatmapMode, showHeatmap, showPaths, showMarkers, activeEvents]);
+
   const appState = {
     // Raw filter state — used by axiomContext.js destructuring
     selectedMap,
@@ -409,7 +448,6 @@ export default function App() {
     },
     hoveredEvent,
   };
-
   const heatmapGridKey = `${heatmapMode}_${playerTypeFilter}`;
   const activeHeatmapGrid = viewMode === 'upload' && uploadedData 
     ? (uploadedData.heatmaps?.[selectedMap]?.[heatmapGridKey] || null)
@@ -423,6 +461,30 @@ export default function App() {
     return [...new Set(matchEvents.filter(e => !e.is_bot).map(e => e.user_id))].sort();
   }, [filteredEvents, selectedMatchId]);
 
+  // ── AXIOM map click handler ──────────────────────────────────────────────
+  const handleMapClick = useCallback(({ px, py }) => {
+    if (!axiomOpen || !axiomRef.current) return;
+    const nearby = filteredEvents.filter(e =>
+      e.event !== 'Position' && e.event !== 'BotPosition' &&
+      Math.sqrt(((e.px||0)-px)**2 + ((e.py||0)-py)**2) < 30
+    );
+    const killsNearby  = nearby.filter(e => e.event === 'Kill').length;
+    const deathsNearby = nearby.filter(e => e.event === 'Killed').length;
+    const lootNearby   = nearby.filter(e => e.event === 'Loot').length;
+    const stormNearby  = nearby.filter(e => e.event === 'KilledByStorm').length;
+    const msg = `Designer clicked on map position (px:${px}, py:${py}).
+
+Within 30px of this location:
+- Kills: ${killsNearby}
+- Deaths: ${deathsNearby}
+- Loot pickups: ${lootNearby}
+- Storm deaths: ${stormNearby}
+- Total nearby events: ${nearby.length}
+
+What does this area suggest about the map design? Is this location notable compared to the overall match data?`;
+    axiomRef.current.sendMessage(msg);
+  }, [filteredEvents, axiomOpen]);
+
   return (
     <div style={{ display: 'flex', flexDirection: 'column', height: '100vh', overflow: 'hidden', background: 'var(--bg0)' }}>
       <Header
@@ -430,6 +492,8 @@ export default function App() {
         selectedMap={selectedMap} onMapChange={setSelectedMap}
         selectedMatchId={selectedMatchId} selectedDate={selectedDate}
         playerTypeFilter={playerTypeFilter} loading={loading}
+        sourceEventCount={sourceEventCount} processedEventCount={processedEventCount}
+        filteredCount={filteredEvents.length}
         onClearUpload={() => { setUploadedData(null); setViewMode('built-in'); }}
         uploadedMapNames={uploadedData?.maps || []}
         axiomOpen={axiomOpen}
@@ -522,6 +586,8 @@ export default function App() {
               customMapConfig={viewMode === 'upload' ? uploadedData?.mapConfigs?.[selectedMap]?.config : null}
               customMinimapUrl={viewMode === 'upload' ? uploadedData?.mapConfigs?.[selectedMap]?.minimapUrl : null}
               onEventHover={(e) => setHoveredEvent(e)}
+              onMapClick={handleMapClick}
+              axiomOpen={axiomOpen}
               showStormCircle={showStormCircle} activeCircle={activeCircle}
               showLandingZones={showLandingZones} landingGrid={landingGrid} topLandingZones={topLandingZones}
             />
@@ -549,6 +615,48 @@ export default function App() {
   );
 }
 
+function CopyLinkButton() {
+  const [copied, setCopied] = useState(false);
+  return (
+    <button
+      onClick={() => {
+        navigator.clipboard.writeText(window.location.href);
+        setCopied(true);
+        setTimeout(() => setCopied(false), 2000);
+      }}
+      style={{
+        fontFamily: "'JetBrains Mono',monospace",
+        fontSize: 10, letterSpacing: '.1em', textTransform: 'uppercase',
+        padding: '5px 12px', background: 'transparent',
+        border: `1px solid ${copied ? '#22C55E' : '#1E2D42'}`,
+        color: copied ? '#22C55E' : '#4B6280',
+        cursor: 'pointer', transition: 'all .15s',
+      }}
+    >
+      {copied ? '✓ COPIED' : '⬡ SHARE'}
+    </button>
+  );
+}
+
+function DataCompletenessIndicator({ loaded, source, filteredCount }) {
+  if (!loaded) return null;
+  const pct = source > 0 ? Math.round((loaded / source) * 100) : 100;
+  const color = pct >= 95 ? '#22C55E' : pct >= 80 ? '#FACC15' : '#EF4444';
+  return (
+    <div style={{
+      display: 'flex', alignItems: 'center', gap: 8,
+      background: '#090D14', border: '1px solid #1E2D42',
+      padding: '4px 10px',
+    }}>
+      <div style={{ width: 6, height: 6, borderRadius: '50%', background: color }} />
+      <div style={{ fontFamily: "'JetBrains Mono',monospace", fontSize: 9, color: '#4B6280', lineHeight: 1.4 }}>
+        <div style={{ color: '#E2E8F0' }}>{filteredCount.toLocaleString()} visible</div>
+        <div>{loaded.toLocaleString()} loaded · {pct}% of src</div>
+      </div>
+    </div>
+  );
+}
+
 function Header({ 
   viewMode, onViewModeChange, 
   selectedMap, onMapChange, 
@@ -556,7 +664,8 @@ function Header({
   playerTypeFilter, loading,
   onClearUpload,
   uploadedMapNames = [],
-  axiomOpen, isAxiomEnabled, onAxiomToggle
+  axiomOpen, isAxiomEnabled, onAxiomToggle,
+  sourceEventCount, processedEventCount, filteredCount,
 }) {
   return (
     <div style={{
@@ -594,8 +703,10 @@ function Header({
         </div>
       )}
 
-      <div style={{ marginLeft: 'auto', display: 'flex', gap: 12, alignItems: 'center' }}>
+      <div style={{ marginLeft: 'auto', display: 'flex', gap: 10, alignItems: 'center' }}>
         {loading && <span style={{ fontFamily: 'var(--font-mono)', fontSize: 10, color: 'var(--accent)', letterSpacing: '.1em' }}>LOADING...</span>}
+        {!loading && <DataCompletenessIndicator loaded={processedEventCount} source={sourceEventCount} filteredCount={filteredCount} />}
+        <CopyLinkButton />
 
         {isAxiomEnabled && (
           <button 
