@@ -1,4 +1,4 @@
-# LILA BLACK — Player Journey Visualization Tool
+# LILA BLACK — AI Enabled Player Journey Visualization Tool
 
 > A browser-based map intelligence tool that transforms raw gameplay telemetry into spatial, time-aware visualizations. Built for Level Designers at LILA Games. Now featuring **AXIOM — Design Intelligence Assistant**.
 
