@@ -64,6 +64,17 @@ export default function Timeline({ currentTimeMs, onScrub, matchDurationMs, isPl
       <span style={{ fontFamily: 'var(--font-mono)', fontSize: 12, color: 'var(--text-3)', minWidth: 58, textAlign: 'right', flexShrink: 0 }}>
         {msToDisplay(matchDurationMs)}
       </span>
+
+      {disabled && (
+        <div style={{
+          position: 'absolute', top: 0, left: 0, width: '100%', height: '100%',
+          display: 'flex', alignItems: 'center', justifyContent: 'center',
+          background: 'rgba(15, 23, 42, 0.6)', color: 'var(--text-2)',
+          fontSize: 12, fontWeight: 500, pointerEvents: 'none'
+        }}>
+          Select a match ID for timeline playback
+        </div>
+      )}
     </div>
   );
 }

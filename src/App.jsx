@@ -100,6 +100,11 @@ export default function App() {
     }
   }, [selectedMap, index, selectedDate]);
 
+  // ── Compute source events ───────────────────────────────────────────────
+  const sourceEvents = (viewMode === 'upload' && uploadedData) 
+    ? uploadedData.events.filter(e => e.map === selectedMap) 
+    : allEvents;
+
   // ── Match duration tracking ───────────────────────────────────────────────
   useEffect(() => {
     if (!selectedMatchId) {
@@ -107,11 +112,11 @@ export default function App() {
       setCurrentTimeMs(0);
       return;
     }
-    const matchEvents = allEvents.filter(e => e.match_id === selectedMatchId);
+    const matchEvents = sourceEvents.filter(e => e.match_id === selectedMatchId);
     const maxTs = Math.max(...matchEvents.map(e => e.ts), 0);
     setMatchDurationMs(maxTs);
     setCurrentTimeMs(0);
-  }, [selectedMatchId, allEvents]);
+  }, [selectedMatchId, sourceEvents]);
 
   // ── Playback animation loop ───────────────────────────────────────────────
   useEffect(() => {
@@ -146,9 +151,6 @@ export default function App() {
   };
 
   // ── Filter events ─────────────────────────────────────────────────────────
-  const sourceEvents = (viewMode === 'upload' && uploadedData) 
-    ? uploadedData.events.filter(e => e.map === selectedMap) 
-    : allEvents;
   
   const filteredEvents = sourceEvents.filter(e => {
     if (selectedMatchId && e.match_id !== selectedMatchId) return false;
