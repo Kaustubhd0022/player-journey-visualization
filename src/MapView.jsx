@@ -9,9 +9,11 @@ export default function MapView({
   selectedMap, events, showPaths, showMarkers, 
   showHeatmap, heatmapGrid, heatmapMode, 
   playerTypeFilter, loading, selectedMatchId, 
-  showMapImage, customMapConfig, customMinimapUrl 
+  showMapImage, customMapConfig, customMinimapUrl,
+  onEventHover 
 }) {
   const plotRef = useRef(null);
+  const hoverTimerRef = useRef(null);
   const [isolatedPlayer, setIsolatedPlayer] = useState(null);
 
   const getMinimapUrl = (map) => {
@@ -49,7 +51,7 @@ export default function MapView({
           },
           opacity,
           name: uid, hoverinfo: 'none',
-          customdata: [uid],
+          customdata: sorted.map(e => ({ user_id: uid, ...e })), // Pass full event data for hover
         });
       });
     }
@@ -82,6 +84,7 @@ export default function MapView({
           text: evts.map(e => `<b>${cfg.label}</b><br>${e.user_id}<br>T+${Math.floor(e.ts/1000)}s`),
           hovertemplate: '%{text}<extra></extra>',
           name: cfg.label,
+          customdata: evts // Pass event objects
         });
       });
     }
@@ -129,16 +132,39 @@ export default function MapView({
 
     Plotly.react(plotRef.current, buildTraces(), layout, config);
 
-    // Click to isolate
+    // Events
     const handleRef = plotRef.current;
+    
     const onClick = (data) => {
-      const uid = data.points[0]?.data?.customdata?.[0];
-      if (uid) setIsolatedPlayer(uid === isolatedPlayer ? null : uid);
+      const uid = data.points[0]?.data?.customdata?.[data.points[0].pointNumber]?.user_id || data.points[0]?.data?.customdata?.[0];
+      if (uid && typeof uid === 'string') setIsolatedPlayer(uid === isolatedPlayer ? null : uid);
+    };
+
+    const onHover = (data) => {
+        const point = data.points[0];
+        const evt = point.data.customdata?.[point.pointNumber];
+        if (evt && evt.event && onEventHover) {
+            clearTimeout(hoverTimerRef.current);
+            hoverTimerRef.current = setTimeout(() => {
+                onEventHover(evt);
+            }, 1500);
+        }
+    };
+
+    const onUnhover = () => {
+        clearTimeout(hoverTimerRef.current);
     };
 
     handleRef.on('plotly_click', onClick);
-    return () => handleRef.removeAllListeners('plotly_click');
-  }, [selectedMap, buildTraces, showHeatmap, heatmapGrid, heatmapMode, isolatedPlayer, showMapImage]);
+    handleRef.on('plotly_hover', onHover);
+    handleRef.on('plotly_unhover', onUnhover);
+
+    return () => {
+        handleRef.removeAllListeners('plotly_click');
+        handleRef.removeAllListeners('plotly_hover');
+        handleRef.removeAllListeners('plotly_unhover');
+    };
+  }, [selectedMap, buildTraces, showHeatmap, heatmapGrid, heatmapMode, isolatedPlayer, showMapImage, onEventHover]);
 
   return (
     <div style={{ flex: 1, background: 'var(--bg0)', position: 'relative', overflow: 'hidden' }}>
