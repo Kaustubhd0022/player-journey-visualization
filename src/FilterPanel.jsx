@@ -14,6 +14,7 @@ export default function FilterPanel({
   showHeatmap,         onShowHeatmapChange,
   showMapImage,        onShowMapImageChange,
   heatmapMode,         onHeatmapModeChange,
+  isAxiomEnabled,      onAxiomEnabledChange,
   events,
   matchDurationMs
 }) {
@@ -177,6 +178,35 @@ export default function FilterPanel({
               <span className="checkbox-label">{evt.label}</span>
             </div>
           ))}
+        </div>
+      </div>
+
+      {/* AI Assistant Toggle */}
+      <div className="filter-section" style={{ borderTop: '1px solid var(--border-dim)', paddingTop: 16 }}>
+        <label className="control-label">AI ASSISTANT</label>
+        <div style={{ display:'flex', alignItems:'center', justifyContent:'space-between', padding:'7px 0' }}>
+          <span style={{ fontSize:13, color:'var(--text-1)' }}>Enable AXIOM</span>
+          <div
+            onClick={() => onAxiomEnabledChange(!isAxiomEnabled)}
+            style={{
+              width:40, height:22,
+              background: isAxiomEnabled ? 'var(--accent-dim)' : 'var(--bg4)',
+              border: `1px solid ${isAxiomEnabled ? 'var(--accent)' : 'var(--border)'}`,
+              borderRadius:11, position:'relative', cursor:'pointer', transition:'all .15s'
+            }}
+          >
+            <div style={{
+              position:'absolute',
+              top:3,
+              left: isAxiomEnabled ? 21 : 3,
+              width:14, height:14, borderRadius:'50%',
+              background: isAxiomEnabled ? '#000' : 'var(--text-3)',
+              transition:'left .15s'
+            }}/>
+          </div>
+        </div>
+        <div style={{ fontSize: 10, color: 'var(--text-3)', marginTop: 4, fontFamily: 'var(--font-mono)' }}>
+          DIRECT SPATIAL INTELLIGENCE
         </div>
       </div>
 

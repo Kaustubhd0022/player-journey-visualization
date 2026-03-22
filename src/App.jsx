@@ -32,8 +32,8 @@ export default function App() {
 
   // ── AI State ──────────────────────────────────────────────────────────────
   const [axiomOpen, setAxiomOpen]     = useState(false);
+  const [isAxiomEnabled, setIsAxiomEnabled] = useState(true);
   const axiomRef = useRef(null);
-  const prevPhaseRef = useRef(null);
   const [hoveredEvent, setHoveredEvent] = useState(null);
 
   // ── Data state ────────────────────────────────────────────────────────────
@@ -89,8 +89,7 @@ export default function App() {
       setAllEvents(eventsData.events || []);
       setHeatmapGrids(heatmapData || {});
       setLoading(false);
-    }
-).catch(err => {
+    }).catch(err => {
       console.error('Data load failed:', err);
       setLoading(false);
     });
@@ -143,32 +142,6 @@ export default function App() {
     return () => { cancelAnimationFrame(rafRef.current); lastFrameRef.current = null; };
   }, [isPlaying, playbackSpeed, matchDurationMs]);
 
-  // ── AI Context and Triggers ──────────────────────────────────────────────
-  const triggerAxiom = useCallback((type, payload) => {
-    if (axiomOpen) {
-      axiomRef.current?.triggerAI(type, payload);
-    } else {
-      // Passive badge increment removed for less intrusion
-      // setAxiomBadge(b => Math.min(b + 1, 9));
-    }
-  }, [axiomOpen]);
-
-  // Automatic triggers removed as per user request for less chattiness
-  /*
-  useEffect(() => { if (selectedMatchId) triggerAxiom('MATCH_SELECTED', selectedMatchId); }, [selectedMatchId, triggerAxiom]);
-  useEffect(() => { if (showHeatmap) triggerAxiom('HEATMAP_CHANGE', heatmapMode); }, [heatmapMode, showHeatmap, triggerAxiom]);
-
-  useEffect(() => {
-    if (!matchDurationMs || !selectedMatchId) return;
-    const pct = currentTimeMs / matchDurationMs;
-    const phase = pct < 0.33 ? 'early' : pct < 0.66 ? 'mid' : 'late';
-    if (phase !== prevPhaseRef.current) {
-      prevPhaseRef.current = phase;
-      triggerAxiom('TIMELINE_PHASE', phase);
-    }
-  }, [currentTimeMs, matchDurationMs, selectedMatchId, triggerAxiom]);
-  */
-
   const handleViewModeChange = (mode) => {
     setViewMode(mode);
     setIsPlaying(false);
@@ -186,15 +159,22 @@ export default function App() {
   });
 
   const appState = {
-    selectedMap, selectedDate, selectedMatchId,
-    playerTypeFilter, activeEvents,
-    showHeatmap, heatmapMode,
-    currentTimeMs, matchDurationMs,
-    filteredEvents,
-    allEvents: sourceEvents,
-    hoveredEvent,
+    currentView: {
+      map: selectedMap,
+      date: selectedDate,
+      match: selectedMatchId || 'Full Day Aggregate',
+      playerFilter: playerTypeFilter,
+      activeEvents,
+      heatmapActive: showHeatmap,
+      heatmapMode
+    },
+    visibleData: {
+      kills: filteredEvents.filter(e => e.event === 'Kill' || e.event === 'BotKill').length,
+      stormDeaths: filteredEvents.filter(e => e.event === 'KilledByStorm').length,
+      humanPlayers: [...new Set(filteredEvents.filter(e => !e.is_bot).map(e => e.user_id))].length,
+    },
     isUploadedData: viewMode === 'upload',
-    uploadedMapName: selectedMap,
+    hoveredEvent
   };
 
   const heatmapGridKey = `${heatmapMode}_${playerTypeFilter}`;
@@ -212,11 +192,8 @@ export default function App() {
         onClearUpload={() => { setUploadedData(null); setViewMode('built-in'); }}
         uploadedMapNames={uploadedData?.maps || []}
         axiomOpen={axiomOpen}
+        isAxiomEnabled={isAxiomEnabled}
         onAxiomToggle={() => setAxiomOpen(!axiomOpen)}
-        onAxiomSuggestion={(text) => {
-            setAxiomOpen(true);
-            setTimeout(() => axiomRef.current?.sendMessage(text), 300);
-        }}
       />
 
       <div style={{ display: 'flex', flex: 1, overflow: 'hidden', position: 'relative' }}>
@@ -243,6 +220,7 @@ export default function App() {
               selectedMap={selectedMap} onMapChange={setSelectedMap}
               selectedDate={selectedDate} onDateChange={setSelectedDate}
               selectedMatchId={selectedMatchId} onMatchChange={setSelectedMatchId}
+              isAxiomEnabled={isAxiomEnabled} onAxiomEnabledChange={setIsAxiomEnabled}
               availableDates={viewMode === 'upload' ? (uploadedData?.dates || []) : availableDates}
               availableMatches={viewMode === 'upload' ? (uploadedData?.matches || []) : availableMatches}
               playerTypeFilter={playerTypeFilter} onPlayerTypeChange={setPlayerTypeFilter}
@@ -264,15 +242,17 @@ export default function App() {
               selectedMatchId={selectedMatchId}
               customMapConfig={viewMode === 'upload' ? uploadedData?.mapConfigs?.[selectedMap]?.config : null}
               customMinimapUrl={viewMode === 'upload' ? uploadedData?.mapConfigs?.[selectedMap]?.minimapUrl : null}
-              onEventHover={(e) => { setHoveredEvent(e); triggerAxiom('EVENT_HOVER', e); }}
+              onEventHover={(e) => setHoveredEvent(e)}
             />
 
-            <AxiomPanel 
+            {(isAxiomEnabled && axiomOpen) && (
+              <AxiomPanel 
                 ref={axiomRef}
                 appState={appState}
                 isOpen={axiomOpen}
                 onClose={() => setAxiomOpen(false)}
-            />
+              />
+            )}
           </>
         )}
       </div>
@@ -295,8 +275,7 @@ function Header({
   playerTypeFilter, loading,
   onClearUpload,
   uploadedMapNames = [],
-  axiomOpen, onAxiomToggle,
-  onAxiomSuggestion
+  axiomOpen, isAxiomEnabled, onAxiomToggle
 }) {
   return (
     <div style={{
@@ -336,27 +315,25 @@ function Header({
 
       <div style={{ marginLeft: 'auto', display: 'flex', gap: 12, alignItems: 'center' }}>
         {loading && <span style={{ fontFamily: 'var(--font-mono)', fontSize: 10, color: 'var(--accent)', letterSpacing: '.1em' }}>LOADING...</span>}
-        
-        <div style={{ position: 'relative' }}>
-            <button
+
+        {isAxiomEnabled && (
+          <button 
             onClick={onAxiomToggle}
             style={{
-                fontFamily: "'Barlow Condensed',sans-serif",
-                fontSize: 11, fontWeight: 600, letterSpacing: '.08em',
-                textTransform: 'uppercase', padding: '5px 14px',
-                background: axiomOpen ? 'var(--accent)' : 'rgba(0,200,255,.08)',
-                color: axiomOpen ? '#000' : 'var(--accent)',
-                border: '1px solid var(--accent)', cursor: 'pointer',
-                display: 'flex', alignItems: 'center', gap: 6,
-                transition: 'all .15s',
+              fontFamily: "'Barlow Condensed',sans-serif",
+              fontSize: 11, fontWeight: 600, letterSpacing: '.08em',
+              textTransform: 'uppercase', padding: '5px 14px',
+              background: axiomOpen ? 'var(--accent)' : 'rgba(0,200,255,.08)',
+              color: axiomOpen ? '#000' : 'var(--accent)',
+              border: '1px solid var(--accent)', cursor: 'pointer',
+              display: 'flex', alignItems: 'center', gap: 6,
+              transition: 'all .15s',
             }}
-            >
+          >
             <AxiomLogo size={14} animated={!axiomOpen} />
             {axiomOpen ? 'CLOSE' : 'AXIOM'}
-            </button>
-
-            {/* AxiomSuggestionPopup removed */}
-        </div>
+          </button>
+        )}
 
         <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
             {selectedDate && <span style={{ fontFamily: 'var(--font-mono)', fontSize: 10, color: 'var(--text-3)', background: 'var(--bg3)', border: '1px solid var(--border-dim)', padding: '4px 10px' }}>{selectedDate}</span>}
