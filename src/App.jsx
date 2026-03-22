@@ -1,5 +1,105 @@
-import { useState, useEffect, useRef, useCallback } from 'react';
+import { useState, useEffect, useRef, useCallback, useMemo } from 'react';
 import { loadEvents, loadHeatmaps, loadIndex } from './dataLoader';
+
+function runDataDiagnostic(rawEvents, filteredEvents, selectedMap, selectedDate, selectedMatchId) {
+  console.group('=== LILA DATA DIAGNOSTIC ===');
+  
+  console.log('RAW EVENTS LOADED:', rawEvents?.length ?? 'undefined/null');
+  
+  if (!rawEvents || rawEvents.length === 0) {
+    console.error('CRITICAL: No raw events loaded at all. JSON fetch failed or file is empty.');
+    console.groupEnd();
+    return;
+  }
+  
+  // Check event types
+  const eventTypes = {};
+  rawEvents.forEach(e => {
+    eventTypes[e.event] = (eventTypes[e.event] || 0) + 1;
+  });
+  console.log('EVENT TYPE BREAKDOWN:', eventTypes);
+  
+  // Check player types
+  const humanCount = rawEvents.filter(e => e.player_type === 'human').length;
+  const botCount   = rawEvents.filter(e => e.player_type === 'bot').length;
+  const unknownType = rawEvents.filter(e => !e.player_type).length;
+  console.log('PLAYER TYPES:', { human: humanCount, bot: botCount, unknown: unknownType });
+  
+  if (unknownType > 0) {
+    console.warn('WARNING: Some events have no player_type — bot detection may have failed');
+    console.log('Sample unknown event:', rawEvents.find(e => !e.player_type));
+  }
+  
+  // Check coordinates
+  const withPixels  = rawEvents.filter(e => e.px != null && e.py != null);
+  const missingPx   = rawEvents.filter(e => e.px == null || e.py == null);
+  const outOfBounds = rawEvents.filter(e => e.px < 0 || e.px > 1024 || e.py < 0 || e.py > 1024);
+  console.log('COORDINATE STATUS:', {
+    totalWithPixels: withPixels.length,
+    missingCoords: missingPx.length,
+    outOfBounds: outOfBounds.length,
+    pctMissing: ((missingPx.length / rawEvents.length) * 100).toFixed(1) + '%',
+    pctOutOfBounds: ((outOfBounds.length / rawEvents.length) * 100).toFixed(1) + '%',
+  });
+  
+  if (missingPx.length > 0) {
+    console.warn('Sample event with missing coords:', missingPx[0]);
+    console.warn('All fields on this event:', Object.keys(missingPx[0]));
+  }
+  
+  // Check timestamp
+  const withTs    = rawEvents.filter(e => e.ts != null && e.ts >= 0);
+  const missingTs = rawEvents.filter(e => e.ts == null || e.ts < 0);
+  const maxTs     = Math.max(...rawEvents.map(e => e.ts || 0));
+  const minTs     = Math.min(...rawEvents.filter(e => e.ts > 0).map(e => e.ts));
+  console.log('TIMESTAMP STATUS:', {
+    withTimestamp: withTs.length,
+    missingTimestamp: missingTs.length,
+    minTs, maxTs,
+    estimatedDurationMinutes: ((maxTs - minTs) / 60000).toFixed(1),
+    looksLikeUnixEpoch: maxTs > 1_000_000_000_000 ? 'YES — timestamps may be Unix epoch, not match-relative!' : 'No',
+  });
+  
+  // Check match IDs
+  const matchIds = [...new Set(rawEvents.map(e => e.match_id).filter(Boolean))];
+  console.log('MATCH IDs FOUND:', matchIds.length, matchIds.slice(0, 5));
+  
+  // Check map field
+  const maps = [...new Set(rawEvents.map(e => e.map || e.map_name).filter(Boolean))];
+  console.log('MAPS IN DATA:', maps);
+  
+  // Check filter losses
+  console.log('AFTER ALL FILTERS:', filteredEvents?.length ?? 'undefined');
+  console.log('FILTER SETTINGS:', { selectedMap, selectedDate, selectedMatchId });
+  
+  if (filteredEvents && rawEvents.length > 0) {
+    const filterLoss = ((1 - filteredEvents.length / rawEvents.length) * 100).toFixed(1);
+    console.log(`FILTER LOSS: ${filterLoss}% of events filtered out`);
+    if (filterLoss > 80) {
+      console.error('CRITICAL: Filters are removing >80% of events. Check match_id, map name, and date matching logic.');
+    }
+  }
+  
+  // Check position events vs discrete events
+  const positionEvents = rawEvents.filter(e => e.event === 'Position');
+  const discreteEvents = rawEvents.filter(e => e.event !== 'Position');
+  console.log('POSITION EVENTS (paths):', positionEvents.length);
+  console.log('DISCRETE EVENTS (markers):', discreteEvents.length);
+  
+  if (positionEvents.length === 0) {
+    console.error('NO POSITION EVENTS — paths will not render at all');
+  }
+  if (discreteEvents.filter(e => e.event === 'Kill').length === 0) {
+    console.error('NO KILL EVENTS — check event string decoding. Expected "Kill", got:', [...new Set(discreteEvents.map(e => e.event))]);
+  }
+  
+  // Check sample events
+  console.log('SAMPLE RAW EVENT:', rawEvents[0]);
+  console.log('SAMPLE KILL EVENT:', rawEvents.find(e => e.event === 'Kill'));
+  console.log('SAMPLE POSITION EVENT:', rawEvents.find(e => e.event === 'Position'));
+  
+  console.groupEnd();
+}
 import FilterPanel from './FilterPanel';
 import MapView from './MapView';
 import Timeline from './Timeline';
@@ -7,6 +107,8 @@ import UploadMode from './UploadMode';
 import CoordConfigScreen from './CoordConfigScreen';
 import AxiomPanel from './AxiomPanel';
 import AxiomLogo from './AxiomLogo';
+import StatsDashboard from './StatsDashboard';
+import { computeStats, computeStormCircles, getActiveCircle, computeLandingZones, computeLandingGrid, getTopLandingZones, computeDeadZones } from './statsEngine';
 import './styles/globals.css';
 
 export default function App() {
@@ -15,6 +117,8 @@ export default function App() {
   const [selectedDate,     setSelectedDate]      = useState(null);
   const [selectedMatchId,  setSelectedMatchId]   = useState(null);
   const [playerTypeFilter, setPlayerTypeFilter]  = useState('human'); // 'all'|'human'|'bot'
+  const [focusedPlayerId,  setFocusedPlayerId]   = useState(null);
+  const [analysisDepth,    setAnalysisDepth]     = useState(1); // 1: Aggregate, 2: Match, 3: Player
   const [activeEvents,     setActiveEvents]       = useState(['Kill', 'BotKill', 'Killed', 'BotKilled', 'Loot', 'KilledByStorm']);
 
   // ── Layer state ───────────────────────────────────────────────────────────
@@ -23,6 +127,7 @@ export default function App() {
   const [showHeatmap, setShowHeatmap] = useState(false);
   const [showMapImage, setShowMapImage] = useState(true);
   const [heatmapMode,  setHeatmapMode]  = useState('kill'); // 'kill'|'death'|'movement'
+  const [hotspotCount, setHotspotCount] = useState(0); // 0 = off, >0 = # of zones
 
   // ── Timeline state ────────────────────────────────────────────────────────
   const [currentTimeMs,   setCurrentTimeMs]   = useState(0);
@@ -35,6 +140,20 @@ export default function App() {
   const [isAxiomEnabled, setIsAxiomEnabled] = useState(true);
   const axiomRef = useRef(null);
   const [hoveredEvent, setHoveredEvent] = useState(null);
+
+  // ── New Stats & Dashboard state ───────────────────────────────────────────
+  const [activeView, setActiveView] = useState('map'); // 'map' | 'stats'
+  
+  const [stats, setStats] = useState(null);
+  const [landingZones, setLandingZones] = useState([]);
+  const [landingGrid, setLandingGrid] = useState(null);
+  const [topLandingZones, setTopLandingZones] = useState([]);
+  const [deadZones, setDeadZones] = useState([]);
+  
+  const [showStormCircle, setShowStormCircle] = useState(false);
+  const [showLandingZones, setShowLandingZones] = useState(false);
+  const [stormCircles, setStormCircles] = useState([]);
+  const [activeCircle, setActiveCircle] = useState(null);
 
   // ── Data state ────────────────────────────────────────────────────────────
   const [index,          setIndex]          = useState({});
@@ -67,6 +186,7 @@ export default function App() {
     if (!selectedMap || !selectedDate) return;
     setLoading(true);
     setSelectedMatchId(null);
+    setFocusedPlayerId(null);
     setCurrentTimeMs(0);
     setIsPlaying(false);
 
@@ -87,6 +207,7 @@ export default function App() {
       loadHeatmaps(meta.heatmapFile),
     ]).then(([eventsData, heatmapData]) => {
       setAllEvents(eventsData.events || []);
+      runDataDiagnostic(eventsData.events || [], eventsData.events || [], selectedMap, selectedDate, null);
       setHeatmapGrids(heatmapData || {});
       setLoading(false);
     }).catch(err => {
@@ -115,6 +236,7 @@ export default function App() {
   useEffect(() => {
     if (!selectedMatchId) {
       setMatchDurationMs(0);
+      setFocusedPlayerId(null);
       setCurrentTimeMs(0);
       return;
     }
@@ -123,6 +245,31 @@ export default function App() {
     setMatchDurationMs(maxTs);
     setCurrentTimeMs(0);
   }, [selectedMatchId, sourceEvents]);
+
+  // ── Sync Analysis Depth with selections ──────────────────────────────────
+  useEffect(() => {
+    if (focusedPlayerId) setAnalysisDepth(3);
+    else if (selectedMatchId) setAnalysisDepth(2);
+    else setAnalysisDepth(1);
+  }, [focusedPlayerId, selectedMatchId]);
+
+  // ── Auto-configure layers based on depth ──────────────────────────────────
+  useEffect(() => {
+    if (analysisDepth === 1) { // Aggregate
+      setShowPaths(false);
+      setShowMarkers(true);
+      setShowHeatmap(true);
+      setIsPlaying(false);
+    } else if (analysisDepth === 2) { // Match
+      setShowPaths(true);
+      setShowMarkers(true);
+      setShowHeatmap(false);
+    } else if (analysisDepth === 3) { // Player
+      setShowPaths(true);
+      setShowMarkers(true);
+      setShowHeatmap(false);
+    }
+  }, [analysisDepth]);
 
   // ── Playback animation loop ───────────────────────────────────────────────
   useEffect(() => {
@@ -148,39 +295,133 @@ export default function App() {
     setCurrentTimeMs(0);
   };
 
-  const filteredEvents = sourceEvents.filter(e => {
-    if (selectedMatchId && e.match_id !== selectedMatchId) return false;
-    if (playerTypeFilter === 'human' && e.player_type !== 'human') return false;
-    if (playerTypeFilter === 'bot'   && e.player_type !== 'bot')   return false;
-    const isPosition = e.event === 'Position' || e.event === 'BotPosition';
-    if (!isPosition && !activeEvents.includes(e.event)) return false;
-    if (selectedMatchId && currentTimeMs > 0 && e.ts > currentTimeMs) return false;
-    return true;
-  });
+  const filteredEvents = useMemo(() => {
+    if (!allEvents || allEvents.length === 0) return [];
+
+    let result = [...allEvents];
+    
+    // FILTER 1: Match ID
+    // Be careful — match_id may be string or number, coerce both sides
+    if (selectedMatchId && selectedMatchId !== 'Full Day Aggregate') {
+      result = result.filter(e => String(e.match_id) === String(selectedMatchId));
+      console.log(`After match filter (${selectedMatchId}): ${result.length} events`);
+    }
+    
+    // FILTER 2: Player type
+    if (playerTypeFilter === 'human') {
+      result = result.filter(e => e.player_type === 'human');
+      console.log(`After human filter: ${result.length} events`);
+    } else if (playerTypeFilter === 'bot') {
+      result = result.filter(e => e.player_type === 'bot');
+      console.log(`After bot filter: ${result.length} events`);
+    }
+    
+    // FILTER 3: Active event types
+    // Position events always pass through (needed for paths)
+    // Only filter discrete events
+    result = result.filter(e => {
+      if (e.event === 'Position' || e.event === 'BotPosition') return true;
+      return activeEvents.includes(e.event);
+    });
+    console.log(`After event type filter: ${result.length} events`);
+    
+    // FILTER 4: Timeline — only apply when a match is selected AND currentTimeMs > 0
+    if (selectedMatchId && selectedMatchId !== 'Full Day Aggregate' && currentTimeMs > 0) {
+      result = result.filter(e => e.ts <= currentTimeMs);
+      console.log(`After timeline filter (${currentTimeMs}ms): ${result.length} events`);
+    }
+    
+    return result;
+  }, [allEvents, selectedMatchId, playerTypeFilter, activeEvents, currentTimeMs]);
+
+  useEffect(() => {
+    if (allEvents.length > 0) {
+      runDataDiagnostic(allEvents, filteredEvents, selectedMap, selectedDate, selectedMatchId);
+    }
+    
+    if (filteredEvents.length > 0) {
+      const s = computeStats(filteredEvents);
+      setStats(s);
+      
+      const sc = computeStormCircles(filteredEvents);
+      setStormCircles(sc);
+      
+      const lz = computeLandingZones(filteredEvents);
+      setLandingZones(lz);
+      setLandingGrid(computeLandingGrid(lz, playerTypeFilter !== 'bot'));
+      setTopLandingZones(getTopLandingZones(lz, playerTypeFilter !== 'bot'));
+      
+      setDeadZones(computeDeadZones(filteredEvents, availableMatches));
+    } else {
+      setStats(null);
+      setStormCircles([]);
+      setLandingZones([]);
+      setLandingGrid(null);
+      setTopLandingZones([]);
+      setDeadZones([]);
+    }
+  }, [filteredEvents, playerTypeFilter, availableMatches, allEvents, selectedMap, selectedDate, selectedMatchId]);
+
+  useEffect(() => {
+    if (showStormCircle && stormCircles.length > 0 && selectedMatchId) {
+      const minTs = Math.min(...filteredEvents.filter(e => (e.ts||0)>0).map(e=>e.ts), 0);
+      setActiveCircle(getActiveCircle(stormCircles, currentTimeMs, minTs));
+    } else {
+      setActiveCircle(null);
+    }
+  }, [currentTimeMs, showStormCircle, stormCircles, selectedMatchId, filteredEvents]);
 
   const appState = {
+    // Raw filter state — used by axiomContext.js destructuring
+    selectedMap,
+    selectedDate,
+    selectedMatchId,
+    playerTypeFilter,
+    activeEvents,
+    showHeatmap,
+    heatmapMode,
+    currentTimeMs,
+    matchDurationMs,
+    filteredEvents,
+    allEvents,
+    hoveredEvent,
+    isolatedPlayer: focusedPlayerId,
+    isUploadedData: viewMode === 'upload',
+    uploadedMapName: viewMode === 'upload' ? selectedMap : null,
+
+    // Pre-computed stats (also available for context strip in AxiomPanel)
     currentView: {
       map: selectedMap,
       date: selectedDate,
       match: selectedMatchId || 'Full Day Aggregate',
       playerFilter: playerTypeFilter,
+      focusedPlayer: focusedPlayerId,
+      depth: analysisDepth,
       activeEvents,
       heatmapActive: showHeatmap,
-      heatmapMode
+      heatmapMode,
+      hotspotCount,
     },
     visibleData: {
       kills: filteredEvents.filter(e => e.event === 'Kill' || e.event === 'BotKill').length,
       stormDeaths: filteredEvents.filter(e => e.event === 'KilledByStorm').length,
       humanPlayers: [...new Set(filteredEvents.filter(e => !e.is_bot).map(e => e.user_id))].length,
     },
-    isUploadedData: viewMode === 'upload',
-    hoveredEvent
+    hoveredEvent,
   };
 
   const heatmapGridKey = `${heatmapMode}_${playerTypeFilter}`;
   const activeHeatmapGrid = viewMode === 'upload' && uploadedData 
     ? (uploadedData.heatmaps?.[selectedMap]?.[heatmapGridKey] || null)
     : (heatmapGrids[heatmapGridKey] || null);
+
+  // Derive the list of available players for the current match (used by FilterPanel)
+  const availablePlayers = useMemo(() => {
+    const matchEvents = selectedMatchId
+      ? filteredEvents.filter(e => String(e.match_id) === String(selectedMatchId))
+      : filteredEvents;
+    return [...new Set(matchEvents.filter(e => !e.is_bot).map(e => e.user_id))].sort();
+  }, [filteredEvents, selectedMatchId]);
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', height: '100vh', overflow: 'hidden', background: 'var(--bg0)' }}>
@@ -195,6 +436,28 @@ export default function App() {
         isAxiomEnabled={isAxiomEnabled}
         onAxiomToggle={() => setAxiomOpen(!axiomOpen)}
       />
+
+      <div style={{
+        display: 'flex', background: '#090D14',
+        borderBottom: '1px solid #1E2D42', flexShrink: 0,
+      }}>
+        {[
+          { key: 'map',   icon: '◈', label: 'Map View'        },
+          { key: 'stats', icon: '▦', label: 'Statistics'       },
+        ].map(t => (
+          <button key={t.key} onClick={() => setActiveView(t.key)} style={{
+            display: 'flex', alignItems: 'center', gap: 8,
+            padding: '12px 24px', background: activeView === t.key ? 'rgba(0,200,255,.05)' : 'transparent',
+            border: 'none', borderBottom: activeView === t.key ? '2px solid #00C8FF' : '2px solid transparent',
+            color: activeView === t.key ? '#00C8FF' : '#4B6280',
+            fontFamily: "'JetBrains Mono',monospace", fontSize: 11, fontWeight: 600,
+            letterSpacing: '.08em', textTransform: 'uppercase', cursor: 'pointer',
+            transition: 'all .2s'
+          }}>
+            <span style={{ fontSize: 14 }}>{t.icon}</span> {t.label}
+          </button>
+        ))}
+      </div>
 
       <div style={{ display: 'flex', flex: 1, overflow: 'hidden', position: 'relative' }}>
         {viewMode === 'upload' && !uploadedData ? (
@@ -214,12 +477,22 @@ export default function App() {
             setUploadedData(prev => ({ ...prev, events: updatedEvents, maps: [mapName], mapConfigs: { [mapName]: { config, minimapUrl } } }));
             setNeedsConfig(null); setSelectedMap(mapName); setSelectedDate(uploadedData.dates[0]);
           }} />
+        ) : activeView === 'stats' ? (
+          <StatsDashboard 
+            stats={stats} 
+            landingEvents={landingZones} 
+            topLandingZones={topLandingZones} 
+            deadZones={deadZones} 
+          />
         ) : (
           <>
             <FilterPanel
               selectedMap={selectedMap} onMapChange={setSelectedMap}
               selectedDate={selectedDate} onDateChange={setSelectedDate}
               selectedMatchId={selectedMatchId} onMatchChange={setSelectedMatchId}
+              focusedPlayerId={focusedPlayerId} onFocusPlayerChange={setFocusedPlayerId}
+              analysisDepth={analysisDepth} onAnalysisDepthChange={setAnalysisDepth}
+              availablePlayers={availablePlayers}
               isAxiomEnabled={isAxiomEnabled} onAxiomEnabledChange={setIsAxiomEnabled}
               availableDates={viewMode === 'upload' ? (uploadedData?.dates || []) : availableDates}
               availableMatches={viewMode === 'upload' ? (uploadedData?.matches || []) : availableMatches}
@@ -230,7 +503,11 @@ export default function App() {
               showHeatmap={showHeatmap} onShowHeatmapChange={setShowHeatmap}
               showMapImage={showMapImage} onShowMapImageChange={setShowMapImage}
               heatmapMode={heatmapMode} onHeatmapModeChange={setHeatmapMode}
+              hotspotCount={hotspotCount} onHotspotCountChange={setHotspotCount}
               events={filteredEvents} matchDurationMs={matchDurationMs}
+              showStormCircle={showStormCircle} onShowStormCircleChange={setShowStormCircle}
+              showLandingZones={showLandingZones} onShowLandingZonesChange={setShowLandingZones}
+              stats={stats}
             />
 
             <MapView
@@ -240,9 +517,13 @@ export default function App() {
               heatmapGrid={activeHeatmapGrid} heatmapMode={heatmapMode}
               playerTypeFilter={playerTypeFilter} loading={loading}
               selectedMatchId={selectedMatchId}
+              focusedPlayerId={focusedPlayerId}
+              hotspotCount={hotspotCount}
               customMapConfig={viewMode === 'upload' ? uploadedData?.mapConfigs?.[selectedMap]?.config : null}
               customMinimapUrl={viewMode === 'upload' ? uploadedData?.mapConfigs?.[selectedMap]?.minimapUrl : null}
               onEventHover={(e) => setHoveredEvent(e)}
+              showStormCircle={showStormCircle} activeCircle={activeCircle}
+              showLandingZones={showLandingZones} landingGrid={landingGrid} topLandingZones={topLandingZones}
             />
 
             {(isAxiomEnabled && axiomOpen) && (

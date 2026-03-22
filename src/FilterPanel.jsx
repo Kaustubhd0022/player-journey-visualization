@@ -5,6 +5,9 @@ export default function FilterPanel({
   selectedMap,         onMapChange,
   selectedDate,        onDateChange,
   selectedMatchId,     onMatchChange,
+  focusedPlayerId,     onFocusPlayerChange,
+  analysisDepth,       onAnalysisDepthChange,
+  availablePlayers,
   availableDates,
   availableMatches,
   playerTypeFilter,    onPlayerTypeChange,
@@ -14,9 +17,13 @@ export default function FilterPanel({
   showHeatmap,         onShowHeatmapChange,
   showMapImage,        onShowMapImageChange,
   heatmapMode,         onHeatmapModeChange,
+  hotspotCount,        onHotspotCountChange,
   isAxiomEnabled,      onAxiomEnabledChange,
   events,
-  matchDurationMs
+  matchDurationMs,
+  showStormCircle,     onShowStormCircleChange,
+  showLandingZones,    onShowLandingZonesChange,
+  stats
 }) {
   const toggleEvent = (evt) => {
     if (activeEvents.includes(evt)) {
@@ -32,6 +39,56 @@ export default function FilterPanel({
       display: 'flex', flexDirection: 'column', overflowY: 'auto', flexShrink: 0,
       zIndex: 100
     }}>
+      {/* ── STATS STRIP ──────────────────────────────────────────────────────── */}
+      {stats && (
+        <div style={{ background: '#0D1320', padding: '12px 16px', borderBottom: '1px solid #1E2D42' }}>
+          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12 }}>
+            <div>
+              <div style={{ fontFamily: "'JetBrains Mono',monospace", fontSize: 9, color: '#4B6280', letterSpacing: '.1em' }}>K / D RATIO</div>
+              <div style={{ fontFamily: "'Rajdhani',sans-serif", fontSize: 22, fontWeight: 700, color: '#A78BFA', lineHeight: 1 }}>{stats.summary.kd}</div>
+            </div>
+            <div>
+              <div style={{ fontFamily: "'JetBrains Mono',monospace", fontSize: 9, color: '#4B6280', letterSpacing: '.1em' }}>AVG DISTANCE</div>
+              <div style={{ fontFamily: "'Rajdhani',sans-serif", fontSize: 20, fontWeight: 700, color: '#00C8FF', lineHeight: 1.1 }}>{stats.summary.avgDistance}px</div>
+            </div>
+            <div>
+              <div style={{ fontFamily: "'JetBrains Mono',monospace", fontSize: 9, color: '#4B6280', letterSpacing: '.1em' }}>STORM DEATHS</div>
+              <div style={{ fontFamily: "'Rajdhani',sans-serif", fontSize: 20, fontWeight: 700, color: '#FACC15', lineHeight: 1.1 }}>{stats.summary.stormDeathRate}%</div>
+            </div>
+            <div>
+              <div style={{ fontFamily: "'JetBrains Mono',monospace", fontSize: 9, color: '#4B6280', letterSpacing: '.1em' }}>SURVIVAL</div>
+              <div style={{ fontFamily: "'Rajdhani',sans-serif", fontSize: 20, fontWeight: 700, color: '#22C55E', lineHeight: 1.1 }}>{stats.summary.survivalRate}%</div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Analysis Depth (The "Level" System) */}
+      <div className="filter-section" style={{ background: 'rgba(0,200,255,.03)', borderBottom: '1px solid var(--accent-dim)' }}>
+        <label className="control-label" style={{ color: 'var(--accent)' }}>ANALYSIS DEPTH</label>
+        <div className="segmented-control">
+          {[
+            { v: 1, l: 'L1: AGGR' },
+            { v: 2, l: 'L2: MATCH' },
+            { v: 3, l: 'L3: PLYR' }
+          ].map(level => (
+            <button 
+              key={level.v} 
+              className={analysisDepth === level.v ? 'active' : ''}
+              onClick={() => {
+                if (level.v === 1) { onMatchChange(null); onFocusPlayerChange(null); }
+                else if (level.v === 2) { onFocusPlayerChange(null); if (!selectedMatchId && availableMatches.length > 0) onMatchChange(availableMatches[0]); }
+                else if (level.v === 3) { if (!selectedMatchId && availableMatches.length > 0) onMatchChange(availableMatches[0]); }
+                onAnalysisDepthChange(level.v);
+              }}
+              style={{ fontSize: 10 }}
+            >
+              {level.l}
+            </button>
+          ))}
+        </div>
+      </div>
+
       {/* Map Selection */}
       <div className="filter-section">
         <label className="control-label">LOCATION</label>
@@ -68,6 +125,26 @@ export default function FilterPanel({
           {availableMatches.map(m => <option key={m} value={m}>{m.split('.')[0]}</option>)}
         </select>
       </div>
+      
+      {/* Player Focus */}
+      {selectedMatchId && (
+        <div className="filter-section">
+          <label className="control-label">PLAYER FOCUS (ISOLATION)</label>
+          <select 
+            value={focusedPlayerId || ''} 
+            onChange={(e) => onFocusPlayerChange(e.target.value || null)}
+            style={{ width: '100%', background: 'var(--bg2)', color: 'var(--text-1)', border: '1px solid var(--border)', padding: '8px', fontFamily: 'var(--font-ui)', outline: 'none' }}
+          >
+            <option value="">Show All Players</option>
+            {availablePlayers.map(pid => (
+              <option key={pid} value={pid}>{pid}</option>
+            ))}
+          </select>
+          <div style={{ fontSize: 10, color: 'var(--text-3)', marginTop: 4, fontFamily: 'var(--font-mono)' }}>
+            DIM OTHERS · TRACK INDIVIDUAL
+          </div>
+        </div>
+      )}
 
       {/* Player Type */}
       <div className="filter-section">
@@ -126,6 +203,20 @@ export default function FilterPanel({
           </label>
         </div>
         <div className="switch-item">
+          <span className="checkbox-label">Show Landing Zones</span>
+          <label className="switch">
+            <input type="checkbox" checked={showLandingZones} onChange={e => onShowLandingZonesChange(e.target.checked)} />
+            <span className="slider"></span>
+          </label>
+        </div>
+        <div className="switch-item">
+          <span className="checkbox-label">Show Storm Circle</span>
+          <label className="switch">
+            <input type="checkbox" checked={showStormCircle} onChange={e => onShowStormCircleChange(e.target.checked)} />
+            <span className="slider"></span>
+          </label>
+        </div>
+        <div className="switch-item">
           <span className="checkbox-label">Show Density Heatmap</span>
           <label className="switch">
             <input type="checkbox" checked={showHeatmap} onChange={e => onShowHeatmapChange(e.target.checked)} />
@@ -142,7 +233,8 @@ export default function FilterPanel({
             {[
               { id: 'kill', label: 'Kill' },
               { id: 'death', label: 'Death' },
-              { id: 'movement', label: 'Move' }
+              { id: 'movement', label: 'Move' },
+              { id: 'landing', label: 'Drop' }
             ].map(m => (
               <button 
                 key={m.id} 
@@ -152,6 +244,24 @@ export default function FilterPanel({
                 {m.label}
               </button>
             ))}
+          </div>
+          
+          <div style={{ marginTop: 16 }}>
+            <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 6 }}>
+              <label className="control-label" style={{ margin: 0 }}>HOTSPOT CLUSTERS</label>
+              <span style={{ fontFamily: 'var(--font-mono)', fontSize: 11, color: 'var(--accent)' }}>
+                {hotspotCount === 0 ? 'OFF' : `${hotspotCount} ZONES`}
+              </span>
+            </div>
+            <input 
+              type="range" min="0" max="15" step="1" 
+              value={hotspotCount} 
+              onChange={(e) => onHotspotCountChange(parseInt(e.target.value))}
+              style={{ width: '100%', accentColor: 'var(--accent)', cursor: 'pointer' }}
+            />
+            <div style={{ fontSize: 9, color: 'var(--text-4)', marginTop: 4, textAlign: 'center' }}>
+              LABELS AUTO-GENERATE OVER PEAK DENSITY
+            </div>
           </div>
         </div>
       )}
@@ -217,6 +327,7 @@ export default function FilterPanel({
             selectedMatchId={selectedMatchId}
             matchDurationMs={matchDurationMs} 
             playerTypeFilter={playerTypeFilter}
+            focusedPlayerId={focusedPlayerId}
         />
       </div>
     </div>

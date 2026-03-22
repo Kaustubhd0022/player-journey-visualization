@@ -1,7 +1,8 @@
 import { useEffect, useRef, useState, useCallback } from 'react';
 import Plotly from 'plotly.js-dist';
 import { COLORS, EVENTS, MINIMAP_SIZE } from './constants';
-import { gridToBase64 } from './HeatmapRenderer';
+import { gridToBase64, generateFallbackGrid, landingGridToBase64 } from './HeatmapRenderer';
+import { clusterEvents } from './ZoneAnalyzer';
 
 const HUMAN_PALETTE = COLORS.humanPalette;
 
@@ -9,12 +10,15 @@ export default function MapView({
   selectedMap, events, showPaths, showMarkers, 
   showHeatmap, heatmapGrid, heatmapMode, 
   playerTypeFilter, loading, selectedMatchId, 
+  focusedPlayerId, onFocusPlayerChange,
+  hotspotCount,
   showMapImage, customMapConfig, customMinimapUrl,
-  onEventHover 
+  onEventHover,
+  showStormCircle, activeCircle,
+  showLandingZones, landingGrid, topLandingZones
 }) {
   const plotRef = useRef(null);
   const hoverTimerRef = useRef(null);
-  const [isolatedPlayer, setIsolatedPlayer] = useState(null);
 
   const getMinimapUrl = (map) => {
     if (customMinimapUrl) return customMinimapUrl;
@@ -23,106 +27,276 @@ export default function MapView({
 
   const buildTraces = useCallback(() => {
     const traces = [];
-
-    // ── PATHS ──────────────────────────────────────────────────────────────
+    
+    console.log('Building traces from', events.length, 'events');
+    
+    // ── PATHS ─────────────────────────────────────────────────────────────────
     if (showPaths) {
-      const positionEvents = events.filter(e => e.event === 'Position' || e.event === 'BotPosition');
+      const posEvents = events.filter(e => e.event === 'Position' || e.event === 'BotPosition');
+      console.log('Position events for paths:', posEvents.length);
+      
+      // Group by player
       const byPlayer = {};
-      positionEvents.forEach(e => {
+      posEvents.forEach(e => {
         if (!byPlayer[e.user_id]) byPlayer[e.user_id] = [];
         byPlayer[e.user_id].push(e);
       });
-
-      const players = Object.entries(byPlayer);
-      players.forEach(([uid, evts], i) => {
+      
+      const HUMAN_COLORS = ['#3B82F6','#22C55E','#F97316','#A78BFA','#EC4899','#14B8A6','#F59E0B','#EF4444'];
+      let humanIdx = 0;
+      
+      Object.entries(byPlayer).forEach(([uid, evts]) => {
         const sorted = [...evts].sort((a, b) => a.ts - b.ts);
-        const isBot = evts[0].player_type === 'bot';
+        const isBot  = uid.startsWith('BOT_') || evts[0]?.player_type === 'bot';
         
-        const pathOpacity = showMapImage ? (isBot ? 0.75 : 0.85) : 0.95;
-        const opacity = isolatedPlayer ? (isolatedPlayer === uid ? 1 : 0.08) : pathOpacity;
+        // Null-separate segments to avoid lines connecting distant points
+        // Add null between points that are far apart in time (>30s gap)
+        const x = [], y = [];
+        sorted.forEach((e, i) => {
+          if (i > 0 && (e.ts - sorted[i-1].ts) > 30000) {
+            x.push(null); y.push(null); // breaks the line
+          }
+          x.push(e.px);
+          y.push(1024 - e.py); // Plotly y-axis: flip so 0 is bottom
+        });
+        
+        const opacity = focusedPlayerId
+          ? (focusedPlayerId === uid ? 1.0 : 0.06)
+          : isBot ? 0.75 : 0.8;
         
         traces.push({
-          type: 'scattergl', mode: 'lines',
-          x: sorted.map(e => e.px), y: sorted.map(e => MINIMAP_SIZE - e.py),
-          line: { 
-            color: isBot ? COLORS.botPath : HUMAN_PALETTE[i % HUMAN_PALETTE.length], 
+          type: 'scattergl',
+          mode: 'lines',
+          x, y,
+          line: {
+            color: isBot ? '#9CA3AF' : HUMAN_COLORS[humanIdx % HUMAN_COLORS.length],
             width: 2,
-            dash: isBot ? 'dash' : 'solid'
+            dash: isBot ? 'dash' : 'solid',
           },
           opacity,
-          name: uid, hoverinfo: 'none',
-          customdata: sorted.map(e => ({ user_id: uid, ...e })), // Pass full event data for hover
+          name: uid,
+          hoverinfo: 'none',
+          showlegend: false,
         });
-      });
-    }
-
-    // ── MARKERS ────────────────────────────────────────────────────────────
-    if (showMarkers) {
-      const markerEvents = events.filter(e => EVENTS[e.event] && !e.event.includes('Position'));
-      const byType = {};
-      markerEvents.forEach(e => {
-        if (!byType[e.event]) byType[e.event] = [];
-        byType[e.event].push(e);
-      });
-
-      Object.entries(byType).forEach(([evtType, evts]) => {
-        const cfg = EVENTS[evtType];
-        if (!cfg) return;
         
-        const markerOpacity = showMapImage ? 0.9 : 1.0;
+        if (!isBot) humanIdx++;
+      });
+      
+      console.log('Path traces created:', Object.keys(byPlayer).length);
+    }
+    
+    // ── MARKERS ───────────────────────────────────────────────────────────────
+    if (showMarkers) {
+      const EVENT_CONFIG = {
+        Kill:          { color: '#3B82F6', size: 8, symbol: 'cross' },
+        BotKill:       { color: '#3B82F6', size: 8, symbol: 'cross' },
+        Killed:        { color: '#EF4444', size: 8, symbol: 'circle-open' },
+        BotKilled:     { color: '#EF4444', size: 8, symbol: 'circle-open' },
+        Loot:          { color: '#22C55E', size: 6, symbol: 'square' },
+        KilledByStorm: { color: '#FACC15', size: 8, symbol: 'diamond' },
+      };
+      
+      const markerEvents = events.filter(e => EVENT_CONFIG[e.event]);
+      console.log('Marker events to render:', markerEvents.length);
+      
+      // Group by event type for separate traces (better performance + individual toggle)
+      Object.entries(EVENT_CONFIG).forEach(([evtType, cfg]) => {
+        const evts = markerEvents.filter(e => e.event === evtType);
+        if (evts.length === 0) return;
+        
+        console.log(`  ${evtType}: ${evts.length} events`);
         
         traces.push({
-          type: 'scattergl', mode: 'markers',
+          type: 'scattergl',
+          mode: 'markers',
           x: evts.map(e => e.px),
-          y: evts.map(e => MINIMAP_SIZE - e.py),
+          y: evts.map(e => 1024 - e.py), // flip y-axis
           marker: {
             color: cfg.color,
             size: cfg.size,
-            opacity: markerOpacity,
-            symbol: 'circle',
+            symbol: cfg.symbol,
+            opacity: evts.map(e => e.player_type === 'bot' ? 0.8 : 0.9),
+            line: { width: 0 },
           },
-          text: evts.map(e => `<b>${cfg.label}</b><br>${e.user_id}<br>T+${Math.floor(e.ts/1000)}s`),
+          text: evts.map(e => {
+            const mins = Math.floor((e.ts || 0) / 60000);
+            const secs = String(Math.floor(((e.ts || 0) % 60000) / 1000)).padStart(2, '0');
+            return `<b>${evtType}</b><br>${e.user_id}<br>T+${mins}:${secs}<br>(${Math.round(e.px)}, ${Math.round(e.py)})`;
+          }),
           hovertemplate: '%{text}<extra></extra>',
-          name: cfg.label,
-          customdata: evts // Pass event objects
+          hoverlabel: {
+            bgcolor: '#090D14',
+            bordercolor: cfg.color,
+            font: { color: '#E2E8F0', size: 12 },
+          },
+          name: evtType,
+          showlegend: false,
+          customdata: evts,
         });
       });
     }
 
+    // ── HOTSPOT LABELS ─────────────────────────────────────────────────────
+    if (showHeatmap && hotspotCount > 0) {
+      // Clustering depends on the current heatmap mode's events
+      const relevantEvents = events.filter(e => {
+        if (heatmapMode === 'kill') return e.event === 'Kill' || e.event === 'BotKill';
+        if (heatmapMode === 'death') return e.event === 'Killed' || e.event === 'BotKilled' || e.event === 'KilledByStorm';
+        if (heatmapMode === 'movement') return e.event === 'Position' || e.event === 'BotPosition';
+        return false;
+      });
+
+      const clusters = clusterEvents(relevantEvents, hotspotCount);
+      
+      traces.push({
+        type: 'scattergl', mode: 'text',
+        x: clusters.map(c => c.x),
+        y: clusters.map(c => 1024 - c.y),
+        text: clusters.map(c => `🔥 ${c.displayCount}`),
+        textposition: 'top center',
+        textfont: {
+          family: 'var(--font-mono)',
+          size: 14,
+          color: 'var(--accent)',
+          weight: 700
+        },
+        hoverinfo: 'none',
+        showlegend: false
+      });
+    }
+    
+    // ── STORM CIRCLE ──────────────────────────────────────────────────────────
+    if (showStormCircle && activeCircle) {
+      const POINTS = 120;
+      const { cx, cy, radius: r } = activeCircle;
+      const circleX = [], circleY = [];
+      const outerX = [], outerY = [];
+      for (let i = 0; i <= POINTS; i++) {
+        const angle = (i / POINTS) * 2 * Math.PI;
+        circleX.push(cx + r * Math.cos(angle));
+        circleY.push(cy + r * Math.sin(angle));
+        outerX.push(cx + (r + 30) * Math.cos(angle));
+        outerY.push(cy + (r + 30) * Math.sin(angle));
+      }
+
+      traces.push({
+        type: 'scattergl', mode: 'lines', x: circleX, y: circleY,
+        line: { color: '#FACC15', width: 2.5, dash: 'dot' },
+        opacity: 0.85, fill: 'none', hoverinfo: 'none', showlegend: false,
+      });
+
+      traces.push({
+        type: 'scattergl', mode: 'lines', x: outerX, y: outerY,
+        line: { color: 'rgba(250,204,21,0.15)', width: 30 },
+        opacity: 0.5, fill: 'none', hoverinfo: 'none', showlegend: false,
+      });
+
+      traces.push({
+        type: 'scattergl', mode: 'markers+text', x: [cx], y: [cy],
+        marker: { color: '#FACC15', size: 6, symbol: 'cross-thin', line: { color: '#FACC15', width: 2 } },
+        text: ['Safe zone'], textposition: 'top center',
+        textfont: { family: "'JetBrains Mono',monospace", size: 10, color: '#FACC15' },
+        hovertext: `Safe zone center<br>Radius: ${r}px<br>Phase: ${Math.round(activeCircle.progress * 100)}%`, hoverinfo: 'text', showlegend: false,
+      });
+    }
+
+    // ── LANDING ZONES ─────────────────────────────────────────────────────────
+    if (showLandingZones && topLandingZones?.length > 0) {
+      topLandingZones.slice(0, 5).forEach((zone, i) => {
+        traces.push({
+          type: 'scattergl', mode: 'markers+text',
+          x: [zone.px], y: [1024 - zone.py],
+          marker: {
+            color: i === 0 ? '#00C8FF' : '#A78BFA',
+            size: i === 0 ? 14 : 10,
+            symbol: 'diamond',
+            line: { color: '#fff', width: 1.5 },
+          },
+          text: [`LZ ${i+1}\n${zone.pct}%`],
+          textposition: 'top center',
+          textfont: { family: "'JetBrains Mono',monospace", size: 9, color: '#E2E8F0' },
+          hovertext: `Landing Zone ${i+1}<br>${zone.count} players (${zone.pct}%)<br>Cell (${zone.cx}, ${zone.cy})`,
+          hoverinfo: 'text',
+          showlegend: false,
+        });
+      });
+    }
+    
+    console.log('Total traces:', traces.length);
     return traces;
-  }, [events, showPaths, showMarkers, isolatedPlayer, showMapImage]);
+  }, [events, showPaths, showMarkers, focusedPlayerId, showMapImage, showHeatmap, hotspotCount, heatmapMode, showStormCircle, activeCircle, showLandingZones, topLandingZones]);
 
   useEffect(() => {
     if (!plotRef.current) return;
 
     const layout = {
-      paper_bgcolor: '#050810',
-      plot_bgcolor:  '#050810',
-      xaxis: { range: [0, 1024], showgrid: false, zeroline: false, showticklabels: false, fixedrange: false },
-      yaxis: { range: [0, 1024], showgrid: false, zeroline: false, showticklabels: false, fixedrange: false, scaleanchor: 'x', scaleratio: 1 },
-      showlegend: false,
+      paper_bgcolor: 'rgba(0,0,0,0)',
+      plot_bgcolor:  'rgba(0,0,0,0)',
       margin: { l: 0, r: 0, t: 0, b: 0 },
+      xaxis: {
+        range: [0, 1024],
+        showgrid: false, zeroline: false, showticklabels: false,
+        fixedrange: false,
+      },
+      yaxis: {
+        range: [0, 1024], // matches flipped py = 1024 - original_py
+        showgrid: false, zeroline: false, showticklabels: false,
+        fixedrange: false,
+        scaleanchor: 'x',
+        scaleratio: 1,
+      },
       dragmode: 'pan',
-      images: showMapImage ? [{
-        source: getMinimapUrl(selectedMap),
-        xref: 'x', yref: 'y',
-        x: 0, y: 1024,
-        sizex: 1024, sizey: 1024,
-        sizing: 'stretch', opacity: 1, layer: 'below',
-      }] : [],
-    };
+      hovermode: 'closest',
+      images: (() => {
+        const imgs = [];
+        if (showMapImage) {
+          imgs.push({
+            source: getMinimapUrl(selectedMap),
+            xref: 'x', yref: 'y',
+            x: 0,    y: 1024,
+            sizex: 1024, sizey: 1024,
+            sizing: 'stretch',
+            opacity: 1,
+            layer: 'below',
+          });
+        }
+        
+        let hmGrid = heatmapGrid;
+        let mode = heatmapMode;
+        
+        if (showHeatmap && !heatmapGrid) {
+            hmGrid = generateFallbackGrid(events, heatmapMode);
+        }
 
-    // Heatmap overlay
-    if (showHeatmap && heatmapGrid) {
-      const heatmapImg = gridToBase64(heatmapGrid, heatmapMode);
-      layout.images.push({
-        source: heatmapImg,
-        xref: 'x', yref: 'y',
-        x: 0, y: 1024,
-        sizex: 1024, sizey: 1024,
-        sizing: 'stretch', opacity: 0.7, layer: 'above',
-      });
-    }
+        if (showHeatmap && hmGrid) {
+          const heatmapImgUrl = gridToBase64(hmGrid, mode);
+          imgs.push({
+            source: heatmapImgUrl,
+            xref: 'x', yref: 'y',
+            x: 0,    y: 1024,
+            sizex: 1024, sizey: 1024,
+            sizing: 'stretch',
+            opacity: 0.65,
+            layer: 'above',
+          });
+        }
+
+        if (showLandingZones && landingGrid) {
+          const landingImgUrl = landingGridToBase64(landingGrid);
+          imgs.push({
+            source: landingImgUrl,
+            xref: 'x', yref: 'y',
+            x: 0, y: 1024,
+            sizex: 1024, sizey: 1024,
+            sizing: 'stretch',
+            opacity: 0.75,
+            layer: 'above',
+          });
+        }
+
+        return imgs;
+      })(),
+    };  
 
     const config = {
       displayModeBar: false,
@@ -137,7 +311,9 @@ export default function MapView({
     
     const onClick = (data) => {
       const uid = data.points[0]?.data?.customdata?.[data.points[0].pointNumber]?.user_id || data.points[0]?.data?.customdata?.[0];
-      if (uid && typeof uid === 'string') setIsolatedPlayer(uid === isolatedPlayer ? null : uid);
+      if (uid && typeof uid === 'string' && onFocusPlayerChange) {
+        onFocusPlayerChange(uid === focusedPlayerId ? null : uid);
+      }
     };
 
     const onHover = (data) => {
@@ -167,7 +343,7 @@ export default function MapView({
         handleRef.removeAllListeners('plotly_hover');
         handleRef.removeAllListeners('plotly_unhover');
     };
-  }, [selectedMap, buildTraces, showHeatmap, heatmapGrid, heatmapMode, isolatedPlayer, showMapImage, onEventHover]);
+  }, [selectedMap, buildTraces, showHeatmap, heatmapGrid, heatmapMode, focusedPlayerId, showMapImage, onEventHover, onFocusPlayerChange]);
 
   return (
     <div style={{ flex: 1, background: 'var(--bg0)', position: 'relative', overflow: 'hidden' }}>
@@ -190,14 +366,14 @@ export default function MapView({
       {/* Legend */}
       <Legend />
 
-      {/* Isolated player indicator */}
-      {isolatedPlayer && (
+      {/* Focused player indicator */}
+      {focusedPlayerId && (
         <div style={{
           position: 'absolute', top: 16, left: 16, background: 'rgba(9,13,20,.92)',
           border: '1px solid var(--kill)', padding: '6px 12px', zIndex: 10,
           fontFamily: 'var(--font-mono)', fontSize: 10, color: 'var(--kill)',
         }}>
-          ISOLATED: {isolatedPlayer} — <span style={{ color: 'var(--text-3)', cursor: 'pointer' }} onClick={() => setIsolatedPlayer(null)}>ESC to clear</span>
+          ISOLATED: {focusedPlayerId} — <span style={{ color: 'var(--text-3)', cursor: 'pointer' }} onClick={() => onFocusPlayerChange(null)}>ESC to clear</span>
         </div>
       )}
     </div>
