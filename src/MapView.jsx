@@ -17,6 +17,11 @@ export default function MapView({
   showStormCircle, activeCircle,
   showLandingZones, landingGrid, topLandingZones
 }) {
+  console.log('MapView render — storm props:', {
+    showStormCircle,
+    activeCircle,
+    stormCircles: events?.length, // Closest proxy we have to stormCircles length here if not passed separately, but implementation plan says it should be passed.
+  });
   const plotRef = useRef(null);
   const hoverTimerRef = useRef(null);
   const [clickFlash, setClickFlash] = useState(null);
@@ -168,37 +173,89 @@ export default function MapView({
     
     // ── STORM CIRCLE ──────────────────────────────────────────────────────────
     if (showStormCircle && activeCircle) {
-      const POINTS = 120;
-      const { cx, cy, radius: r } = activeCircle;
-      const circleX = [], circleY = [];
-      const outerX = [], outerY = [];
-      for (let i = 0; i <= POINTS; i++) {
-        const angle = (i / POINTS) * 2 * Math.PI;
-        circleX.push(cx + r * Math.cos(angle));
-        circleY.push(cy + r * Math.sin(angle));
-        outerX.push(cx + (r + 30) * Math.cos(angle));
-        outerY.push(cy + (r + 30) * Math.sin(angle));
+      console.log('Drawing storm circle:', activeCircle);
+
+      const POINTS = 100;
+      const { cx, cy, radius } = activeCircle;
+
+      // Validate: don't draw if values are unreasonable
+      if (cx > 0 && cy > 0 && radius > 0 && radius < 800) {
+
+        // Main circle border
+        const circleX = [];
+        const circleY = [];
+        for (let i = 0; i <= POINTS; i++) {
+          const angle = (i / POINTS) * 2 * Math.PI;
+          circleX.push(cx + radius * Math.cos(angle));
+          circleY.push(cy + radius * Math.sin(angle));
+        }
+
+        traces.push({
+          type: 'scatter',    // NOT scattergl — scatter supports line styling better for circles
+          mode: 'lines',
+          x: circleX,
+          y: circleY,
+          line: {
+            color: '#FACC15',
+            width: 2.5,
+            dash: 'dot',
+          },
+          fill: 'none',
+          opacity: 0.9,
+          hoverinfo: 'skip',
+          showlegend: false,
+          name: 'Storm boundary',
+        });
+
+        // Subtle outer danger zone ring
+        const outerX = [], outerY = [];
+        for (let i = 0; i <= POINTS; i++) {
+          const angle = (i / POINTS) * 2 * Math.PI;
+          outerX.push(cx + (radius + 20) * Math.cos(angle));
+          outerY.push(cy + (radius + 20) * Math.sin(angle));
+        }
+
+        traces.push({
+          type: 'scatter',
+          mode: 'lines',
+          x: outerX,
+          y: outerY,
+          line: { color: 'rgba(250,204,21,0.2)', width: 12 },
+          fill: 'none',
+          opacity: 0.6,
+          hoverinfo: 'skip',
+          showlegend: false,
+          name: 'Storm zone',
+        });
+
+        // Center marker
+        traces.push({
+          type: 'scatter',
+          mode: 'markers+text',
+          x: [cx],
+          y: [cy],
+          marker: {
+            color: '#FACC15',
+            size: 8,
+            symbol: 'cross-thin-open',
+            line: { color: '#FACC15', width: 2 },
+          },
+          text: ['Safe zone'],
+          textposition: 'top center',
+          textfont: {
+            family: "'JetBrains Mono',monospace",
+            size: 10,
+            color: '#FACC15',
+          },
+          hoverinfo: 'text',
+          hovertext: `Safe zone center (${cx}, ${cy})\nRadius: ${radius}px`,
+          showlegend: false,
+          name: 'Safe center',
+        });
+
+      } else {
+        console.warn('Storm circle values out of range:', activeCircle);
       }
-
-      traces.push({
-        type: 'scattergl', mode: 'lines', x: circleX, y: circleY,
-        line: { color: '#FACC15', width: 2.5, dash: 'dot' },
-        opacity: 0.85, fill: 'none', hoverinfo: 'none', showlegend: false,
-      });
-
-      traces.push({
-        type: 'scattergl', mode: 'lines', x: outerX, y: outerY,
-        line: { color: 'rgba(250,204,21,0.15)', width: 30 },
-        opacity: 0.5, fill: 'none', hoverinfo: 'none', showlegend: false,
-      });
-
-      traces.push({
-        type: 'scattergl', mode: 'markers+text', x: [cx], y: [cy],
-        marker: { color: '#FACC15', size: 6, symbol: 'cross-thin', line: { color: '#FACC15', width: 2 } },
-        text: ['Safe zone'], textposition: 'top center',
-        textfont: { family: "'JetBrains Mono',monospace", size: 10, color: '#FACC15' },
-        hovertext: `Safe zone center<br>Radius: ${r}px<br>Phase: ${Math.round(activeCircle.progress * 100)}%`, hoverinfo: 'text', showlegend: false,
-      });
     }
 
     // ── LANDING ZONES ─────────────────────────────────────────────────────────
@@ -262,35 +319,34 @@ export default function MapView({
           });
         }
         
-        let hmGrid = heatmapGrid;
-        let mode = heatmapMode;
-        
-        if (showHeatmap && !heatmapGrid) {
-            hmGrid = generateFallbackGrid(events, heatmapMode);
+        // --- Heatmap / Landing Selection logic (Fix D) ---
+        let heatmapImage = null;
+        if (showHeatmap || showLandingZones) {
+          if (heatmapMode === 'landing' || showLandingZones) {
+            if (landingGrid && Math.max(...landingGrid.flat()) > 0) {
+              heatmapImage = gridToBase64(landingGrid, 'landing');
+            } else {
+              console.warn('Landing grid missing or empty — drop zones will not render');
+            }
+          } else if (showHeatmap) {
+            let hmGrid = heatmapGrid;
+            if (!hmGrid) {
+              hmGrid = generateFallbackGrid(events, heatmapMode);
+            }
+            if (hmGrid) {
+              heatmapImage = gridToBase64(hmGrid, heatmapMode);
+            }
+          }
         }
 
-        if (showHeatmap && hmGrid) {
-          const heatmapImgUrl = gridToBase64(hmGrid, mode);
+        if (heatmapImage) {
           imgs.push({
-            source: heatmapImgUrl,
+            source: heatmapImage,
             xref: 'x', yref: 'y',
             x: 0,    y: 1024,
             sizex: 1024, sizey: 1024,
             sizing: 'stretch',
-            opacity: 0.65,
-            layer: 'above',
-          });
-        }
-
-        if (showLandingZones && landingGrid) {
-          const landingImgUrl = landingGridToBase64(landingGrid);
-          imgs.push({
-            source: landingImgUrl,
-            xref: 'x', yref: 'y',
-            x: 0, y: 1024,
-            sizex: 1024, sizey: 1024,
-            sizing: 'stretch',
-            opacity: 0.75,
+            opacity: 0.72,
             layer: 'above',
           });
         }

@@ -368,11 +368,14 @@ export default function App() {
       setStats(s);
       
       const sc = computeStormCircles(filteredEvents);
+      console.log('Storm circles computed:', sc.length);
       setStormCircles(sc);
       
       const lz = computeLandingZones(filteredEvents);
+      console.log('Landing events computed:', lz.length);
+      const lg = computeLandingGrid(lz, playerTypeFilter !== 'bot');
       setLandingZones(lz);
-      setLandingGrid(computeLandingGrid(lz, playerTypeFilter !== 'bot'));
+      setLandingGrid(lg);
       setTopLandingZones(getTopLandingZones(lz, playerTypeFilter !== 'bot'));
       
       setDeadZones(computeDeadZones(filteredEvents, availableMatches));
@@ -387,9 +390,15 @@ export default function App() {
   }, [filteredEvents, playerTypeFilter, availableMatches, allEvents, selectedMap, selectedDate, selectedMatchId]);
 
   useEffect(() => {
-    if (showStormCircle && stormCircles.length > 0 && selectedMatchId) {
-      const minTs = Math.min(...filteredEvents.filter(e => (e.ts||0)>0).map(e=>e.ts), 0);
-      setActiveCircle(getActiveCircle(stormCircles, currentTimeMs, minTs));
+    if (showStormCircle && stormCircles.length > 0) {
+      // In aggregate mode (no match), we want the "final" circle state
+      // or we use currentTimeMs if it's somehow set.
+      const timeToUse = selectedMatchId ? currentTimeMs : 999999999;
+      
+      const validTs = filteredEvents.filter(e => (e.ts||0) > 0).map(e => e.ts);
+      const minTs = validTs.length > 0 ? Math.min(...validTs) : 0;
+      
+      setActiveCircle(getActiveCircle(stormCircles, timeToUse, minTs));
     } else {
       setActiveCircle(null);
     }

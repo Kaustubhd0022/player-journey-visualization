@@ -251,7 +251,10 @@ export default function FilterPanel({
               <button 
                 key={m.id} 
                 className={heatmapMode === m.id ? 'active' : ''}
-                onClick={() => onHeatmapModeChange(m.id)}
+                onClick={() => {
+                  onHeatmapModeChange(m.id);
+                  if (!showHeatmap) onShowHeatmapChange(true);
+                }}
               >
                 {m.label}
               </button>

@@ -255,120 +255,174 @@ export function computeStats(events) {
 export function computeStormCircles(events) {
   if (!events || events.length === 0) return [];
 
-  const positions = events
-    .filter(e => e.event === 'Position' && !e.is_bot)
-    .sort((a, b) => (a.ts || 0) - (b.ts || 0));
+  // DEFENSIVE: handle multiple possible event string formats
+  const POSITION_EVENTS = ['Position', 'position', 'POSITION', 'pos'];
+  const STORM_EVENTS    = ['KilledByStorm', 'Storm', 'storm_death', 'StormDeath', 'killedbystorm'];
+  const DEATH_EVENTS    = ['Killed', 'Death', 'killed', 'death'];
 
-  if (positions.length === 0) return [];
+  const isPosition = e => POSITION_EVENTS.includes(e.event);
+  const isStorm    = e => STORM_EVENTS.some(s => e.event?.toLowerCase().includes('storm'));
+  const isDeath    = e => DEATH_EVENTS.includes(e.event) || isStorm(e);
+  const isHuman    = e => e.player_type === 'human' || !e.user_id?.startsWith('BOT_');
 
-  const tsList = events.map(e => e.ts || 0);
-  const maxTs = safeMax(tsList, 0);
-  const positiveTsList = events.filter(e => (e.ts || 0) > 0).map(e => e.ts);
-  const minTs = safeMin(positiveTsList, maxTs);
-  const duration = maxTs - minTs;
+  const humanPositions = events.filter(e => isPosition(e) && isHuman(e));
+  const stormDeaths    = events.filter(e => isStorm(e));
+  const allDeaths      = events.filter(e => isDeath(e) && isHuman(e));
 
-  if (duration <= 0) return [];
+  if (humanPositions.length < 5) return [];
+
+  const allTs  = events.map(e => e.ts || 0).filter(t => t > 0);
+  const maxTs  = Math.max(...allTs, 0);
+  const minTs  = Math.min(...allTs, maxTs);
+  const dur    = maxTs - minTs;
+
+  if (dur < 10000) return []; // less than 10 seconds of data — not useful
 
   const SNAPSHOTS = 8;
-  const circles = [];
+  const circles   = [];
 
   for (let i = 0; i < SNAPSHOTS; i++) {
-    const t = minTs + (duration / SNAPSHOTS) * i;
-    const tNext = t + duration / SNAPSHOTS;
+    const tSnapshot = minTs + (dur / SNAPSHOTS) * i;
 
+    // Get players alive at this moment
     const deadByNow = new Set(
-      events
-        .filter(e => (e.event === 'Killed' || e.event === 'KilledByStorm') && (e.ts || 0) <= t)
+      allDeaths
+        .filter(e => (e.ts || 0) <= tSnapshot)
         .map(e => e.user_id)
     );
 
-    const alivePosAtT = positions.filter(e =>
+    // Find positions of alive players near this timestamp (within one bucket)
+    const bucketMs = dur / SNAPSHOTS;
+    const alivePosNear = humanPositions.filter(e =>
       !deadByNow.has(e.user_id) &&
-      Math.abs((e.ts || 0) - t) < duration / SNAPSHOTS
+      Math.abs((e.ts || 0) - tSnapshot) <= bucketMs
     );
 
-    if (alivePosAtT.length < 3) continue;
+    if (alivePosNear.length < 2) continue;
 
-    const cx = alivePosAtT.reduce((s, e) => s + (e.px || 0), 0) / alivePosAtT.length;
-    const cy = alivePosAtT.reduce((s, e) => s + (e.py || 0), 0) / alivePosAtT.length;
+    // Centroid of alive players
+    const cx = Math.round(alivePosNear.reduce((s, e) => s + (e.px || 0), 0) / alivePosNear.length);
+    const cy = Math.round(alivePosNear.reduce((s, e) => s + (e.py || 0), 0) / alivePosNear.length);
 
+    // Radius shrinks linearly from 460px (early) to 60px (late)
     const progress = i / (SNAPSHOTS - 1);
-    const radius = Math.round(480 - progress * 400);
-
-    const nearbyStorm = events.filter(e =>
-      e.event === 'KilledByStorm' &&
-      (e.ts || 0) >= t - duration / SNAPSHOTS &&
-      (e.ts || 0) < tNext
-    );
+    const radius   = Math.round(460 - progress * 400);
 
     circles.push({
-      ts: t,
-      cx: Math.round(cx),
-      cy: Math.round(cy),
+      ts:       tSnapshot,
+      cx,
+      cy:       1024 - cy, // flip Y for Plotly coordinate system
       radius,
       progress,
-      stormDeathsInPhase: nearbyStorm.length,
+      alivePlayers: alivePosNear.length,
     });
   }
 
+  console.log('Circles computed:', circles.length);
+  circles.forEach((c, i) => console.log(`  Circle ${i}: cx=${c.cx}, cy=${c.cy}, r=${c.radius}, ts=${c.ts}`));
   return circles;
 }
 
 export function getActiveCircle(circles, currentTimeMs, matchMinTs) {
-  if (!circles || circles.length === 0) return null;
+  console.log('getActiveCircle called:', { circlesCount: circles?.length, currentTimeMs, matchMinTs });
+
+  if (!circles || circles.length === 0) {
+    console.warn('getActiveCircle: no circles available');
+    return null;
+  }
+
   const t = currentTimeMs + matchMinTs;
   const past = circles.filter(c => c.ts <= t);
-  if (past.length === 0) return circles[0];
-  return past[past.length - 1];
+  const result = past.length > 0 ? past[past.length - 1] : circles[0];
+
+  console.log('Active circle result:', result);
+  return result;
 }
 
 export function computeLandingZones(events) {
   if (!events || events.length === 0) return [];
+
+  // Position events — handle any capitalization
+  const isPosition = e =>
+    e.event?.toLowerCase() === 'position' ||
+    e.event?.toLowerCase() === 'pos';
+
+  const positionEvents = events.filter(isPosition);
+  console.log('Landing zone computation — position events available:', positionEvents.length);
+
+  if (positionEvents.length === 0) {
+    console.warn('No position events found — drop zone heatmap will be empty');
+    return [];
+  }
+
   const seen = new Set();
   const landings = [];
-  const sorted = [...events]
-    .filter(e => e.event === 'Position' && e.px != null && e.py != null)
-    .sort((a, b) => (a.ts || 0) - (b.ts || 0));
+
+  // Sort by ts ascending — first event per player per match = landing
+  const sorted = [...positionEvents].sort((a, b) => (a.ts || 0) - (b.ts || 0));
 
   sorted.forEach(e => {
-    const key = `${e.match_id}||${e.user_id}`;
+    if (e.px == null || e.py == null) return; // skip events without coordinates
+    const key = `${e.match_id}_${e.user_id}`;
     if (!seen.has(key)) {
       seen.add(key);
       landings.push({
-        user_id: e.user_id,
-        match_id: e.match_id,
-        is_bot: e.is_bot,
+        user_id:     e.user_id,
+        match_id:    e.match_id,
+        player_type: e.player_type || (e.user_id?.startsWith('BOT_') ? 'bot' : 'human'),
         px: e.px,
         py: e.py,
         ts: e.ts,
       });
     }
   });
+
+  console.log('Landing zones found:', landings.length, '| Sample:', landings[0]);
   return landings;
 }
 
 export function computeLandingGrid(landingEvents, humanOnly = true) {
   const GRID = 64;
   const SIZE = 1024;
-  let evts = landingEvents;
-  if (humanOnly) evts = evts.filter(e => !e.is_bot);
-  if (evts.length === 0) return Array.from({ length: GRID }, () => Array(GRID).fill(0));
 
-  const grid = Array.from({ length: GRID }, () => Array(GRID).fill(0));
-  evts.forEach(e => {
-    const cx = Math.min(GRID - 1, Math.max(0, Math.floor((e.px || 0) / SIZE * GRID)));
-    const cy = Math.min(GRID - 1, Math.max(0, Math.floor((e.py || 0) / SIZE * GRID)));
-    grid[cy][cx]++;
+  let events = landingEvents || [];
+  if (humanOnly) {
+    events = events.filter(e =>
+      e.player_type === 'human' || !e.user_id?.startsWith('BOT_')
+    );
+  }
+
+  console.log('computeLandingGrid — events to grid:', events.length, '| humanOnly:', humanOnly);
+
+  if (events.length === 0) {
+    console.warn('No landing events to grid — all cells will be 0');
+    return Array.from({length: GRID}, () => Array(GRID).fill(0));
+  }
+
+  // Raw count grid first
+  const countGrid = Array.from({length: GRID}, () => Array(GRID).fill(0));
+
+  events.forEach(e => {
+    const px = e.px || 0;
+    const py = e.py || 0;
+    // Clamp to valid range
+    const cx = Math.max(0, Math.min(GRID - 1, Math.floor(px / SIZE * GRID)));
+    const cy = Math.max(0, Math.min(GRID - 1, Math.floor(py / SIZE * GRID)));
+    countGrid[cy][cx]++;
   });
 
-  // Safe max with reduce instead of spread
-  let maxVal = 1;
-  for (let ry = 0; ry < GRID; ry++) {
-    for (let cx = 0; cx < GRID; cx++) {
-      if (grid[ry][cx] > maxVal) maxVal = grid[ry][cx];
-    }
+  // Check for data
+  const maxVal = Math.max(...countGrid.flat());
+  console.log('Landing grid max cell value:', maxVal);
+
+  if (maxVal === 0) {
+    console.error('Landing grid is all zeros — px/py values may be wrong');
+    console.log('Sample event px/py:', events.slice(0,3).map(e => ({ px:e.px, py:e.py })));
+    return countGrid;
   }
-  return grid.map(row => row.map(v => v / maxVal));
+
+  // Normalize to 0-1
+  return countGrid.map(row => row.map(v => v / maxVal));
 }
 
 export function getTopLandingZones(landingEvents, humanOnly = true) {

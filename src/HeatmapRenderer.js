@@ -20,18 +20,19 @@ const COLOR_SCALES = {
     { stop: 1.00, rgba: [20,  83,  45,  200]  },
   ],
   landing: [
-    { stop: 0.0,  rgba: [0,   0,   0,   0]   },
-    { stop: 0.2,  rgba: [167, 139, 250, 100]  },
-    { stop: 0.5,  rgba: [124, 58,  237, 160]  },
-    { stop: 0.8,  rgba: [79,  70,  229, 200]  },
-    { stop: 1.0,  rgba: [0,   200, 255, 220]  },
+    { stop: 0.0,  rgba: [0,   0,   0,   0]   },    // transparent
+    { stop: 0.15, rgba: [139, 92,  246, 80]   },    // light purple
+    { stop: 0.4,  rgba: [109, 40,  217, 150]  },    // mid purple
+    { stop: 0.7,  rgba: [76,  29,  149, 190]  },    // deep purple
+    { stop: 1.0,  rgba: [0,   200, 255, 220]  },    // cyan peak = hottest LZ
   ],
 };
 
 function interpolateColor(val, scale) {
+  const clamped = Math.max(0, Math.min(1, val));
   for (let i = 1; i < scale.length; i++) {
-    if (val <= scale[i].stop) {
-      const t = (val - scale[i-1].stop) / (scale[i].stop - scale[i-1].stop);
+    if (clamped <= scale[i].stop) {
+      const t = (clamped - scale[i-1].stop) / (scale[i].stop - scale[i-1].stop);
       return scale[i-1].rgba.map((c, j) => Math.round(c + (scale[i].rgba[j] - c) * t));
     }
   }
@@ -39,27 +40,38 @@ function interpolateColor(val, scale) {
 }
 
 export function gridToBase64(grid, mode = 'kill') {
-  if (!grid || !grid.length) return null;
-  const size = grid.length;
+  if (!grid || grid.length === 0) {
+    console.warn('gridToBase64: empty grid passed for mode', mode);
+    return '';
+  }
+
+  const scale = COLOR_SCALES[mode] || COLOR_SCALES.death;
+  if (!COLOR_SCALES[mode]) {
+    console.warn('gridToBase64: unknown mode', mode, '— falling back to death scale');
+  }
+
+  const size   = grid.length;
   const canvas = document.createElement('canvas');
   canvas.width = size; canvas.height = size;
-  const ctx = canvas.getContext('2d');
-  const imgData = ctx.createImageData(size, size);
-  const scale = COLOR_SCALES[mode] || COLOR_SCALES.death;
+  const ctx    = canvas.getContext('2d');
+  const img    = ctx.createImageData(size, size);
 
   for (let y = 0; y < size; y++) {
     for (let x = 0; x < size; x++) {
-      const val = Math.max(0, Math.min(1, grid[y][x]));
+      const val = Math.max(0, Math.min(1, grid[y]?.[x] || 0));
       const [r, g, b, a] = interpolateColor(val, scale);
       const i = (y * size + x) * 4;
-      imgData.data[i]   = r;
-      imgData.data[i+1] = g;
-      imgData.data[i+2] = b;
-      imgData.data[i+3] = a;
+      img.data[i]   = r;
+      img.data[i+1] = g;
+      img.data[i+2] = b;
+      img.data[i+3] = a;
     }
   }
-  ctx.putImageData(imgData, 0, 0);
-  return canvas.toDataURL('image/png');
+
+  ctx.putImageData(img, 0, 0);
+  const result = canvas.toDataURL('image/png');
+  console.log('gridToBase64 result for mode', mode, '— length:', result.length);
+  return result;
 }
 
 export function landingGridToBase64(grid) {
@@ -74,7 +86,7 @@ export function generateFallbackGrid(events, mode) {
   const relevantList = events.filter(e => {
     if (mode === 'kill') return e.event === 'Kill' || e.event === 'BotKill';
     if (mode === 'death') return e.event === 'Killed' || e.event === 'BotKilled' || e.event === 'KilledByStorm';
-    if (mode === 'movement') return e.event === 'Position' || e.event === 'BotPosition';
+    if (mode === 'movement' || mode === 'landing') return e.event === 'Position' || e.event === 'BotPosition';
     return false;
   }).filter(e => typeof e.px === 'number' && typeof e.py === 'number' && !isNaN(e.px) && !isNaN(e.py));
 
