@@ -87,10 +87,15 @@ This decision deserves explicit justification because it shapes everything else.
 | Question | Answer |
 |---|---|
 | Is the dataset static? | Yes — 5 days, no new data arriving |
-| Does KDE need to re-run per user session? | No — same inputs produce same output |
-| Can we afford browser compute for KDE? | No — 3–8s per heatmap switch is unacceptable |
+| Does KDE need to re-run per user session? | For primary heatmaps, No. For dynamic "Drop Zones", Yes. |
+| Can we afford browser compute for KDE? | For 64x64 landing grids, YES. Stats engine computes this in <15ms. |
 | Can we afford WASM parquet parsing? | No — 8MB download + 4s cold start breaks load target |
 | What's the JSON payload size? | ~400–600KB per map-day after gzip — well within budget |
+
+### 2.3 Hybrid Computation Strategy (v2.1 Update)
+While base heatmaps are pre-computed offline, the system now includes a **Real-time Spatial Analytics Engine** (`statsEngine.js`) that computes:
+- **Storm Boundaries**: Dynamically calculated from survivor centroids on every timeline scrub.
+- **Drop Zone Grids**: Computed on-the-fly from position telemetry to ensure instant response for uploaded or filtered data.
 
 The answer is unambiguous: compute once offline, serve forever as static files.
 
@@ -370,12 +375,12 @@ Step 2 — Split into layers:
   • pathData:   Position events, grouped by user_id, sorted by ts
   • markerData: Kill / Killed / Loot / KilledByStorm events
 │
-Step 3 — Build Plotly traces:
-  • One trace per player path  (mode: 'lines')
-  • One trace per event type   (mode: 'markers')
-  • One image trace            (heatmap grid → base64 PNG overlay)
-│
-Step 4 — Plotly.react()       (differential update — only changed traces re-render)
+Step 4 — Spatial Analytics (statsEngine.js):
+  • Compute Storm Circle boundaries from survivor centroids
+  • Generate 64x64 Landing Grid from first-position events
+  • Identify Choke Points and Dead Zones
+
+Step 5 — Plotly.react()       (differential update — only changed traces re-render)
   → Target: <200ms total
 ```
 
@@ -510,6 +515,7 @@ Before shipping, mapping was verified with this 4-step process:
     ├── FilterPanel.jsx                 ← All controls
     ├── Timeline.jsx                    ← Slider + playback
     ├── HeatmapRenderer.js              ← Grid → canvas → base64
+    ├── statsEngine.js                  ← Real-time spatial analytics (Storm, LZ)
     ├── CoordinateMapper.js             ← worldToPixel() + MAP_CONFIG
     └── constants.js                    ← Color tokens, event config
 ```
