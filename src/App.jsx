@@ -455,7 +455,6 @@ export default function App() {
       stormDeaths: filteredEvents.filter(e => e.event === 'KilledByStorm').length,
       humanPlayers: [...new Set(filteredEvents.filter(e => !e.is_bot).map(e => e.user_id))].length,
     },
-    hoveredEvent,
   };
   const heatmapGridKey = `${heatmapMode}_${playerTypeFilter}`;
   const activeHeatmapGrid = viewMode === 'upload' && uploadedData 
